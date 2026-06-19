@@ -1,0 +1,33 @@
+name: Claude Code
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened]
+jobs:
+  claude:
+    if: ${{ (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) || (github.event_name == 'issues' && contains(github.event.issue.body, '@claude')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@v1
+        id: claude
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--max-turns 55"
+      - name: Open pull request into main
+        if: steps.claude.outputs.branch_name != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.claude.outputs.branch_name }}
+        run: |
+          set -e
+          n=$(gh pr list --head "$BRANCH" --state open --json number --jq 'length' || echo 0)
+          if [ "$n" = "0" ]; then gh pr create --base main --head "$BRANCH" --title "Automated change from @claude" --body "Automated PR from an @claude task."; fi

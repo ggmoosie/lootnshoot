@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>LootNShoot</title>
+<!--
+==================================================================================
+  LootNShoot — modular build (refactored from the single-file "encyclopedia")
+  --------------------------------------------------------------------------------
+  Same game, same behavior. The one big <script> was split BY SYSTEM into ES
+  modules under js/. THREE stays the global CDN build (classic <script> below),
+  surfaced to the modules through js/three.js. See CODEMAP.md for the symbol index
+  and CLAUDE.md for where each system lives.
+==================================================================================
+-->
+<link rel="stylesheet" href="./css/styles.css" />
+</head>
+<body>
+<div id="app"></div>
+
+<!-- ============ HUD ============ -->
+<div id="hud">
+  <div id="vig"></div>
+  <div id="crosshair"><i class="t"></i><i class="b"></i><i class="l"></i><i class="r"></i><i class="dot"></i></div>
+  <div id="dmgdir"></div>
+  <div id="hit"></div>
+  <div id="compass"><div id="compassStrip"></div><div id="compassMk"></div></div>
+  <div id="obj" class="hc"><div id="objT">Objective</div><div id="objX">—</div><div id="zone">SAFEHOUSE</div></div>
+  <div id="threats" class="hc"><div id="thN">0</div><div id="thL">Hostiles</div></div>
+  <div id="wallet" class="hc"><div id="cr">0</div><div id="crL">CREDITS</div><div id="lvl">LVL 1</div></div>
+  <div id="mapwrap" class="hc"><canvas id="minimap" width="180" height="180"></canvas></div>
+  <div id="vit" class="hc">
+    <div class="lab">Vitals <span id="stance">STAND</span></div>
+    <div class="bw"><div id="hpF"></div><div id="hpT">100/100</div></div>
+    <div class="bw sm"><div id="stmF"></div></div>
+  </div>
+  <div id="ammo" class="hc">
+    <div id="rld"></div>
+    <div id="amN"><span class="mg">30</span> <span class="rs">/ 0</span></div>
+    <div id="wpn">—</div>
+    <div id="fmode">AUTO</div>
+    <div id="slots"><span class="wslot" data-s="primary">1</span><span class="wslot" data-s="secondary">2</span></div>
+    <div id="nade"></div>
+  </div>
+  <div id="prompt"></div>
+  <div id="banner"><div class="bt"></div><div class="bs"></div></div>
+  <div id="feed"></div>
+</div>
+
+<!-- ============ TOUCH ============ -->
+<div id="touch">
+  <div id="joy"><div id="joyK"></div></div>
+  <div id="utilpad">
+    <div id="bInv" class="tb sm">BAG</div>
+    <div id="bRun" class="tb sm">RUN</div>
+    <div id="bMode" class="tb sm">AUTO</div>
+  </div>
+  <div id="actpad">
+    <div id="bRld"    class="tb" style="grid-area:1/1">RLD</div>
+    <div id="bNade"   class="tb" style="grid-area:1/2">NADE</div>
+    <div id="bUse"    class="tb" style="grid-area:1/3">USE</div>
+    <div id="bAds"    class="tb" style="grid-area:2/1">ADS</div>
+    <div id="bFire"   class="tb fire">FIRE</div>
+    <div id="bSwap"   class="tb" style="grid-area:2/3">SWAP</div>
+    <div id="bCrouch" class="tb" style="grid-area:3/1">CRCH</div>
+    <div id="bJump"   class="tb" style="grid-area:3/2">JUMP</div>
+    <div id="bHeal"   class="tb" style="grid-area:3/3">MED</div>
+  </div>
+</div>
+<div id="rot"><div>↻ &nbsp;Rotate to landscape</div></div>
+
+<!-- ============ OVERLAYS (filled by UI system) ============ -->
+<div id="ovStart" class="ov show"><div class="card" id="startCard"></div></div>
+<div id="ovInv"    class="ov"><div class="card wide" id="invCard"></div></div>
+<div id="ovVendor" class="ov"><div class="card wide" id="vendorCard"></div></div>
+<div id="ovCraft"  class="ov"><div class="card wide" id="craftCard"></div></div>
+<div id="ovSkill"  class="ov"><div class="card" id="skillCard"></div></div>
+<div id="ovExtract" class="ov"><div class="card" id="extractCard"></div></div>
+<div id="ovResult" class="ov"><div class="card" id="resultCard"></div></div>
+<div id="ovPause"  class="ov"><div class="card" id="pauseCard"></div></div>
+<div id="ovSettings" class="ov"><div class="card" id="settingsCard"></div></div>
+<div id="ovMod" class="ov"><div class="card wide" id="modCard"></div></div>
+<div id="ctx"></div>
+<div id="tip"></div>
+<div id="dragGhost"></div>
+
+<!-- three.js r128, classic build (sets window.THREE) — MUST load before the module -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<!-- offline guard: if the CDN didn't load, show the original error and don't boot -->
+<script>
+if(!window.THREE){
+  var sc=document.getElementById('startCard');
+  if(sc) sc.innerHTML='<div class="eb">Load Error</div><h1 class="bad">Offline</h1><p class="sub">LootNShoot loads its 3D engine (Three.js) from a CDN, so it needs an internet connection the first time. Reconnect and reload.</p>';
+}
+</script>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>

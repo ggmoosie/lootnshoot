@@ -1,0 +1,41 @@
+name: CODEMAP
+# Regenerate CODEMAP.md (the repo's navigation index) from the JS modules on every
+# push to main that touches source. Commits with GITHUB_TOKEN (does not retrigger
+# workflows); [skip ci] is belt-and-suspenders.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'js/**'
+      - 'index.html'
+      - 'scripts/gen-codemap.mjs'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codemap
+  cancel-in-progress: true
+
+jobs:
+  regen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Regenerate CODEMAP
+        run: node scripts/gen-codemap.mjs
+      - name: Commit if changed
+        run: |
+          if ! git diff --quiet CODEMAP.md; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add CODEMAP.md
+            git commit -m "chore(codemap): regenerate from source [skip ci]"
+            git push
+          fi
