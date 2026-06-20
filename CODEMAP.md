@@ -75,6 +75,10 @@ _no top-level exports_
 
 - `Player` (const) — js/player.js:16
 
+## js/preview.js
+
+- `createPreview` (function) — js/preview.js:18 — createPreview(canvas, opts) -> handle. opts: bg : scene.background color (default null = transparent) autoRotate : start auto-rotating (default true) rotateSpeed : radians/sec yaw while auto-rotating (default 0.6) fov : camera field of view (default 42) fitOffset : multiplier on the framing distance (default 1.35; >1 = more margin)
+
 ## js/progression.js
 
 - `Progression` (const) — js/progression.js:9
@@ -115,7 +119,7 @@ _no top-level exports_
 
 ## js/ui.js
 
-- `UI` (const) — js/ui.js:24
+- `UI` (const) — js/ui.js:25
 
 ## js/util.js
 

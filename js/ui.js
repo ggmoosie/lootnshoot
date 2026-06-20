@@ -20,6 +20,7 @@ import { Status } from "./status.js";
 import { Loot } from "./loot.js";
 import { Audio } from "./audio.js";
 import { Raid } from "./raid.js";
+import { createPreview } from "./preview.js";
 
 export const UI = (function(){
   const $=id=>document.getElementById(id);
@@ -55,7 +56,7 @@ export const UI = (function(){
   // ---------- overlay helpers ----------
   const OVS=['ovStart','ovInv','ovVendor','ovCraft','ovSkill','ovExtract','ovResult','ovPause','ovSettings','ovMod'];
   function hideAll(){ OVS.forEach(o=>$(o).classList.remove('show')); }
-  function closeMenus(){ hideAll(); hideCtx(); loot=null; Inventory.setExternal(null);
+  function closeMenus(){ hideAll(); hideCtx(); loot=null; Inventory.setExternal(null); disposeGunPreview();
     if(S.mode===MODE.MENU){ const pm=prevMode; S.setMode(pm);
       if(pm===MODE.PAUSE){ $('ovPause').classList.add('show'); }
       else if(pm===MODE.BOOT){ $('ovStart').classList.add('show'); }
@@ -240,42 +241,35 @@ export const UI = (function(){
   function moveTip(x,y){ const t=$('tip'); if(t.style.display==='block'){ t.style.left=Math.min(x+14,innerWidth-210)+'px'; t.style.top=Math.min(y+14,innerHeight-150)+'px'; } }
   function hideTip(){ $('tip').style.display='none'; }
 
-  // ----- weapon modding screen (blueprint schematic) -----
-  let modUid=null, openSlot=null;
-  function openMod(weaponUid){ modUid=weaponUid; openSlot=null; openOverlay('ovMod'); renderMod(); }
-  // stylized side-profile so attachment points read on a schematic (placeholder until real art)
-  function gunSVG(weaponKey){
-    if(weaponKey==='pistol') return `
-      <polygon class="bpgun" points="34,30 60,30 60,34 40,34 40,46 34,46"/>
-      <rect class="bpgun" x="30" y="29" width="6" height="4"/>
-      <polygon class="bpgun" points="48,34 56,34 53,48 47,48"/>`;
-    const long = weaponKey==='dmr';
-    const bx = long?4:8;
-    return `
-      <rect class="bpgun" x="${bx}" y="29" width="${22-bx}" height="2.4"/>
-      <rect class="bpgun" x="14" y="27" width="16" height="6"/>
-      <rect class="bpgun" x="30" y="26" width="28" height="8"/>
-      <rect class="bpgun" x="45" y="23" width="11" height="3"/>
-      <polygon class="bpgun" points="58,27 ${long?86:80},28 ${long?88:82},38 58,34"/>
-      <polygon class="bpgun" points="47,34 54,34 52,47 45,47"/>
-      <polygon class="bpgun" points="33,34 44,34 46,50 35,50"/>`;
+  // ----- weapon modding screen (live 3D gunsmith) -----
+  // The schematic SVG was replaced by a LIVE 3D render of the configured weapon
+  // (M1 preview renderer). The per-slot callout cards/dropdowns are unchanged —
+  // only the visual swapped. The canvas + its WebGLRenderer are created ONCE per
+  // open and kept across re-renders (renderMod rebuilds #modCard's innerHTML on
+  // every attachment change, so we re-parent the persistent canvas back in and
+  // just rebuild the gun model — no per-toggle WebGL context churn). Disposed in
+  // closeMenus to leave no leaked renderer/RAF.
+  let modUid=null, openSlot=null, gunPrev=null, gunCanvas=null;
+  function openMod(weaponUid){ disposeGunPreview(); modUid=weaponUid; openSlot=null; openOverlay('ovMod'); renderMod(); }
+  function disposeGunPreview(){
+    if(gunPrev){ gunPrev.dispose(); gunPrev=null; }
+    if(gunCanvas && gunCanvas.parentNode) gunCanvas.parentNode.removeChild(gunCanvas);
+    gunCanvas=null;
+  }
+  // (re)build the 3D model for the current weapon config and frame it
+  function refreshGunModel(){
+    const loc=Inventory.locate(modUid); if(!loc||!gunPrev) return;
+    gunPrev.setModel(Weapons.buildPreviewModel(loc.item));
   }
   function renderMod(){
     const loc=Inventory.locate(modUid); if(!loc||loc.item.def.type!=='weapon'){ closeMenus(); return; }
     const it=loc.item, wDef=DATA.weapons[it.def.weapon], st=Weapons.stats(it), base=DATA.weapons[it.def.weapon];
     const slotIcon={optic:'🔭',muzzle:'🧪',tactical:'🔦'};
-    // node = point on the gun; card = where the callout sits (viewBox 0..100 x, 0..60 y)
-    const layout={ optic:{node:[50,22.5], card:[50,8]}, muzzle:{node:[11,30], card:[17,51]}, tactical:{node:[30,35], card:[63,52]} };
+    // card = where the callout sits over the 3D stage (percent of the stage box)
+    const layout={ optic:{card:[50,8]}, muzzle:{card:[17,51]}, tactical:{card:[63,52]} };
     // available parts per slot from inventory (carried + stash)
     const avail={}; wDef.slots.forEach(s=>avail[s]=[]);
     for(const g of [...Inventory.carried(), Inventory.stash()]) if(g) for(const t of g.items) if(t.def.type==='attachment'&&avail[t.def.slot]) avail[t.def.slot].push(t);
-    // SVG: gun + leader lines + nodes
-    let svg=`<svg class="bpsvg" viewBox="0 0 100 60" preserveAspectRatio="xMidYMid meet">${gunSVG(it.def.weapon)}`;
-    for(const sl of wDef.slots){ const L=layout[sl]; if(!L) continue; const on=!!it.inst.attachments[sl];
-      svg+=`<line class="bpline ${on?'on':''}" x1="${L.node[0]}" y1="${L.node[1]}" x2="${L.card[0]}" y2="${L.card[1]}"/>
-        <circle class="bpdot ${on?'on':''}" cx="${L.node[0]}" cy="${L.node[1]}" r="1.6"/>
-        <circle class="bpdotr ${on?'on':''}" cx="${L.node[0]}" cy="${L.node[1]}" r="3.2"/>`; }
-    svg+=`</svg>`;
     // HTML callout cards with dropdowns
     let cards='';
     for(const sl of wDef.slots){ const L=layout[sl]; if(!L) continue;
@@ -290,10 +284,24 @@ export const UI = (function(){
     }
     const rows=[['Damage',st.damage,base.damage,1],['RPM',st.rpm,base.rpm,1],['Recoil',st.recoil,base.recoil,-1],['Spread',st.spread,base.spread,-1],['ADS',st.adsTime,base.adsTime,-1],['Zoom',st.zoom,base.zoom,1]];
     const statHTML=rows.map(r=>{ const cur=r[1], bs=r[2], better=r[3]; let cls=''; if(Math.abs(cur-bs)>1e-6) cls=((cur>bs)===(better>0))?'up':'dn'; const fmt=v=>(Math.round(v*1000)/1000); return `<div class="bpstat"><span class="sl">${r[0]}</span><span class="sv ${cls}">${fmt(cur)}</span></div>`; }).join('');
-    $('modCard').innerHTML=`<div class="eb">Gunsmith // Blueprint</div><div class="shophead"><h1 style="margin:0">${it.def.name}</h1><div class="creditpill">${Object.keys(it.inst.attachments||{}).length}/${wDef.slots.length} slots</div></div>
-      <div class="bpstage" id="bpstage">${svg}${cards}</div>
+    $('modCard').innerHTML=`<div class="eb">Gunsmith // Live Render</div><div class="shophead"><h1 style="margin:0">${it.def.name}</h1><div class="creditpill">${Object.keys(it.inst.attachments||{}).length}/${wDef.slots.length} slots</div></div>
+      <div class="bpstage" id="bpstage">${cards}</div>
       <div class="bpstats">${statHTML}</div>
       <div class="btn" id="modClose" style="margin-top:8px;width:auto;display:inline-block"><span class="k">ESC</span> Done</div>`;
+    // create the persistent 3D canvas + preview once; on later re-renders just
+    // re-attach the existing canvas (innerHTML above wiped the stage) so the
+    // WebGL context survives, then rebuild the model to reflect the new config.
+    const stage=$('bpstage');
+    if(!gunCanvas){
+      gunCanvas=document.createElement('canvas'); gunCanvas.className='gunsmith-3d';
+      stage.insertBefore(gunCanvas, stage.firstChild);
+      gunPrev=createPreview(gunCanvas, { autoRotate:true });
+      gunPrev.start();
+    } else {
+      stage.insertBefore(gunCanvas, stage.firstChild);
+      gunPrev.resize();
+    }
+    refreshGunModel();
     $('modClose').onclick=closeMenus;
     $('bpstage').addEventListener('pointerdown', ev=>{ if(!ev.target.closest('.bpcard')){ openSlot=null; renderMod(); } });
     $('modCard').querySelectorAll('[data-toggle]').forEach(b=>b.onclick=()=>{ openSlot=openSlot===b.dataset.toggle?null:b.dataset.toggle; renderMod(); });
