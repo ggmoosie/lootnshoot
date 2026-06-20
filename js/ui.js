@@ -27,6 +27,7 @@ import { buildMannequin } from "./mannequin.js";
 export const UI = (function(){
   const $=id=>document.getElementById(id);
   let selUid=null;
+  const GAME_VERSION='v0.2'; // shown on the start card + sent as report context.version
 
   // ---------- HUD ----------
   function setObjective(t,x,z){ $('objT').textContent=t; $('objX').textContent=x; $('zone').textContent=z; }
@@ -97,7 +98,7 @@ export const UI = (function(){
   }
 
   // ---------- overlay helpers ----------
-  const OVS=['ovStart','ovInv','ovVendor','ovCraft','ovSkill','ovExtract','ovResult','ovPause','ovSettings','ovMod'];
+  const OVS=['ovStart','ovInv','ovVendor','ovCraft','ovSkill','ovExtract','ovResult','ovPause','ovSettings','ovMod','ovReport'];
   function hideAll(){ OVS.forEach(o=>$(o).classList.remove('show')); }
   function closeMenus(){ hideAll(); hideCtx(); hideTip(); clearReveal(); loot=null; Inventory.setExternal(null); disposeGunPreview(); disposeMannequin(); disposeCorpseMannequin();
     if(S.mode===MODE.MENU){ const pm=prevMode; S.setMode(pm);
@@ -124,16 +125,18 @@ export const UI = (function(){
   function renderStart(){
     const has=Save.load();
     $('startCard').innerHTML=`
-      <div class="eb">Tactical Extraction // v0.2</div><h1>LootNShoot</h1>
+      <div class="eb">Tactical Extraction // ${GAME_VERSION}</div><h1>LootNShoot</h1>
       <p class="sub">Gear up in the safehouse, ride the train out to a hostile stop, clear it, grab loot, then choose to extract or push the train deeper for bigger rewards and risk. Die in the field and your pack & rig are gone.</p>
       <div class="hint"><b>WASD</b> move · <b>SPACE</b> jump · <b>C</b> crouch · <b>L-CLICK</b> fire · <b>R-CLICK</b> ADS · <b>R</b> reload · <b>Z</b> melee · <b>G</b> grenade · <b>F</b> pick up · <b>E</b> loot/interact · <b>TAB</b> inventory · rebind all in Settings</div>
       <div class="btn" id="bGo"><span class="k">▶</span> ${has?'Continue':'Enter Safehouse'}</div>
       <div class="btn" id="bSet"><span class="k">⚙</span> Settings</div>
+      <div class="btn" id="bRep"><span class="k">🐞</span> Report a bug / idea</div>
       ${has?'<div class="btn" id="bNew"><span class="k">＋</span> New Game (wipe save)</div>':''}
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:18px;font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;">
         <span>${has?'Save loaded':'No save — fresh start'}</span><span class="soon">More stops &amp; bosses</span></div>`;
     $('bGo').onclick=()=>{ S.profile = has||Save.newProfile(); Progression.recompute(); Input.applySettings(); hideAll(); World.buildHub(); };
     $('bSet').onclick=()=>{ if(!S.profile){ S.profile = has||Save.newProfile(); Progression.recompute(); } openSettings(); };
+    $('bRep').onclick=openReport;
     if(has) $('bNew').onclick=()=>{ Save.wipe(); S.profile=Save.newProfile(); Progression.recompute(); Input.applySettings(); hideAll(); World.buildHub(); };
   }
 
@@ -621,6 +624,87 @@ export const UI = (function(){
     $('modCard').querySelectorAll('[data-rem]').forEach(b=>b.onclick=()=>{ Inventory.removeAttachment(modUid,b.dataset.rem); openSlot=null; renderMod(); refreshHUD(); });
   }
 
+  // ---------- REPORT (bug / feature) ----------
+  // Mirrors the report widget shipped in Riftspawn/TableForge: a Bug/Feature
+  // toggle, a persisted "your name" field, and a message box. Submit POSTs to the
+  // Jarvis brain's /report endpoint with triage context (url, version, and the
+  // last ~5 console errors captured by the ring buffer installed in index.html).
+  // Built from state into #reportCard so it composes with the overlay manager and
+  // reuses the game's HUD styling — no new palette, no new dependencies.
+  const REPORT_URL='https://jarvis-brain.vgermade721.workers.dev/report';
+  const REPORT_NAME_KEY='lootnshoot_report_name';
+  let rpType='bug', rpSending=false;
+  function openReport(){ rpType='bug'; rpSending=false; openOverlay('ovReport'); renderReport(); setTimeout(()=>{ try{ const n=$('rpName'); (n&&n.value?$('rpText'):n).focus(); }catch(_){} },30); }
+  function renderReport(){
+    let savedName=''; try{ savedName=localStorage.getItem(REPORT_NAME_KEY)||''; }catch(_){}
+    const isBug=rpType==='bug';
+    $('reportCard').innerHTML=`<div class="eb">Field Report // Intel</div><h1>Report</h1>
+      <p class="sub">Hit a bug or have an idea? Send it straight to command — we read every one.</p>
+      <div class="tabs">
+        <span class="tab ${isBug?'on':''}" data-rptype="bug">🐞 Bug</span>
+        <span class="tab ${isBug?'':'on'}" data-rptype="feature">✦ Feature request</span>
+      </div>
+      <div class="row" style="border:none;padding:0;display:block">
+        <label class="lab" for="rpName" style="display:block;margin-bottom:5px">Your name</label>
+        <input id="rpName" type="text" maxlength="40" autocomplete="off" placeholder="Operator…"
+          style="width:100%;background:#0c0f12;border:1px solid var(--line);color:var(--text);padding:10px 12px;font-family:var(--mono);font-size:14px;box-sizing:border-box">
+      </div>
+      <div class="row" style="border:none;padding:0;display:block;margin-top:12px">
+        <label class="lab" for="rpText" id="rpTextLabel" style="display:block;margin-bottom:5px">${isBug?'What happened?':'What would you like?'}</label>
+        <textarea id="rpText" maxlength="2000" rows="4"
+          placeholder="${isBug?'The more detail, the faster we can fix it.':'Describe the feature or change you’d love to see.'}"
+          style="width:100%;min-height:96px;background:#0c0f12;border:1px solid var(--line);color:var(--text);padding:10px 12px;font-family:var(--mono);font-size:14px;line-height:1.45;resize:vertical;box-sizing:border-box"></textarea>
+      </div>
+      <div id="rpMsg" style="min-height:18px;font-family:var(--mono);font-size:12px;margin:10px 0 2px;color:var(--dim)"></div>
+      <div class="actbtns" style="display:flex;gap:9px;margin-top:6px">
+        <div class="btn" id="rpCancel" style="width:auto;margin:0;flex:1;text-align:center"><span class="k">ESC</span> Cancel</div>
+        <div class="btn" id="rpSubmit" style="width:auto;margin:0;flex:1;text-align:center"><span class="k">▸</span> Send report</div>
+      </div>`;
+    $('rpName').value=savedName;
+    $('reportCard').querySelectorAll('[data-rptype]').forEach(b=>b.onclick=()=>{
+      if(rpSending) return;
+      const t=b.dataset.rptype; if(t===rpType) return;
+      // preserve in-progress text/name across the toggle re-render
+      const keepName=$('rpName').value, keepText=$('rpText').value;
+      rpType=t; renderReport();
+      $('rpName').value=keepName; $('rpText').value=keepText;
+    });
+    $('rpCancel').onclick=closeMenus;
+    $('rpSubmit').onclick=submitReport;
+  }
+  function reportMsg(text,color){ const m=$('rpMsg'); if(m){ m.textContent=text||''; m.style.color=color||'var(--dim)'; } }
+  async function submitReport(){
+    if(rpSending) return;                         // debounce double-submits
+    const name=($('rpName').value||'').trim();
+    const message=($('rpText').value||'').trim();
+    if(!message){ reportMsg('Tell us a little about it first.','var(--amber)'); $('rpText').focus(); return; }
+    try{ if(name) localStorage.setItem(REPORT_NAME_KEY,name); }catch(_){}
+    rpSending=true; const sub=$('rpSubmit'); if(sub){ sub.classList.add('disabled'); sub.innerHTML='<span class="k">…</span> Sending'; } reportMsg('');
+    const payload={
+      project:'lootnshoot',
+      type:rpType,
+      player:name||'anonymous',
+      message,
+      context:{
+        url:location.href,
+        version:GAME_VERSION,
+        // last ~5 captured console errors, newline-joined (stored server-side as a string)
+        console:(typeof window!=='undefined'&&Array.isArray(window.__LNS_ERRLOG)?window.__LNS_ERRLOG.slice(-5).join('\n'):'')
+      }
+    };
+    try{
+      const res=await fetch(REPORT_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      try{ await res.json(); }catch(_){}          // response is {id,status}; not needed
+      reportMsg('✓ Submitted — thanks!','var(--go)');
+      if(sub) sub.innerHTML='<span class="k">✓</span> Sent';
+      setTimeout(()=>{ if($('ovReport').classList.contains('show')) closeMenus(); },1100);
+    }catch(_){
+      reportMsg('Couldn’t send — please try again.','var(--bad)');
+      rpSending=false; if(sub){ sub.classList.remove('disabled'); sub.innerHTML='<span class="k">▸</span> Send report'; }
+    }
+  }
+
   // ---------- SETTINGS ----------
   function openSettings(){ openOverlay('ovSettings'); renderSettings(); }
   function renderSettings(){
@@ -851,8 +935,9 @@ export const UI = (function(){
       <div class="row"><span>Carried value</span><b>${bag}c</b></div>
       <div class="btn" id="pR"><span class="k">▶</span> Resume</div>
       <div class="btn" id="pS"><span class="k">⚙</span> Settings</div>
+      <div class="btn" id="pRep"><span class="k">🐞</span> Report a bug / idea</div>
       <div class="btn" id="pA"><span class="k">✕</span> ${confirmAbandon?'<span style="color:var(--bad)">Confirm abandon — lose carried loot</span>':'Abandon run'}</div>`;
-    $('pR').onclick=resume; $('pS').onclick=openSettings;
+    $('pR').onclick=resume; $('pS').onclick=openSettings; $('pRep').onclick=openReport;
     $('pA').onclick=()=>{ if(!confirmAbandon){ confirmAbandon=true; renderPause(); return; } abandonRun(); };
   }
   // leave the field without banking: carried bag value is forfeit, but you keep your
@@ -869,5 +954,5 @@ export const UI = (function(){
   Events.on('threats:changed', ()=>{ $('thN').textContent=Enemies.aliveCount(); if(Input.isTouch) refreshTouchHUD(S.player,S.profile); });
 
   return { setObjective, prompt, hit, dmgDir, banner, flashReload, toast, refreshHUD, renderStart, toggleInventory, openStation,
-           openVendor, openCraft, openSkills, openLoot, openSettings, openMod, showExtractChoice, showResult, pause, resume, closeMenus };
+           openVendor, openCraft, openSkills, openLoot, openSettings, openMod, openReport, showExtractChoice, showResult, pause, resume, closeMenus };
 })();
