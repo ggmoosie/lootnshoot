@@ -34,32 +34,43 @@ export const Loot = (function(){
     pk.consumed=true; inter.consumed=true; GFX.world.remove(pk.mesh); Audio.play('pickup');
   }
   function dropFromEnemy(pos){ spawnPickup(pos.x,pos.z, roll('enemy_drop')); }
-  // lootable corpse: its own container grid, opened via INTERACT into the dual-panel loot UI
+  // lootable corpse: a STRUCTURED second actor that mirrors the player. The dead
+  // AI carries its kit in EQUIP SLOTS (primary/secondary/helmet/armor/rig/backpack)
+  // exactly like S.profile.equip, and its loose loot lives INSIDE its equipped rig
+  // + backpack grids (the nested containers) — not one flat dump. The loot UI then
+  // renders the corpse as a paper-doll + its grids beside the player's own.
   function makeCorpse(e){
-    const g=new Inventory.Grid(6,5);
+    const equip={ primary:null, secondary:null, helmet:null, armor:null, clothing:null, rig:null, backpack:null };
     const k=e.kit;
     if(k){
       // their weapon, with the attachments they were using and a partial mag
-      const w=Inventory.newItem(k.wpn, 1, { ammo: 4+Math.floor(Math.random()*14), attachments: Object.assign({}, k.att) });
-      g.add(w);
-      if(k.armor) g.add(Inventory.newItem(k.armor,1));
-      if(k.helmet) g.add(Inventory.newItem(k.helmet,1));
-      // spare ammo of their caliber + odds of meds/nades/cash
-      const cal=k.cal; const ammoId = cal==='556'?'ammo_556':cal==='762'?'ammo_762':'ammo_9mm';
-      g.add(Inventory.newItem(ammoId, 15+Math.floor(Math.random()*30)));
-    } else for(let i=0;i<3;i++) g.add(roll('enemy_drop'));
-    if(Math.random()<0.45) g.add(roll('enemy_drop'));
-    if(Math.random()<0.30) g.add(Inventory.newItem('med_bandage',1));
-    if(Math.random()<0.20) g.add(Inventory.newItem('val_cash',1+Math.floor(Math.random()*3)));
-    const corpse={ grid:g, pos:e.group.position.clone(), label:(e.def.name||'Body')+"'s kit", cmesh:e.cmesh };
+      equip.primary=Inventory.newItem(k.wpn, 1, { ammo: 4+Math.floor(Math.random()*14), attachments: Object.assign({}, k.att) });
+      if(k.armor) equip.armor=Inventory.newItem(k.armor,1);
+      if(k.helmet) equip.helmet=Inventory.newItem(k.helmet,1);
+    }
+    // every body wears a rig; tougher kits sometimes haul a pack too. These give
+    // the corpse its lootable grids (the nested containers the player drags from).
+    equip.rig=Inventory.newItem('rig_basic',1);
+    if(Math.random()<0.40) equip.backpack=Inventory.newItem(Math.random()<0.5?'bag_large':'bag_small',1);
+    // grids the loot actually lands in (rig first, then pack), in slot order
+    const grids=[]; if(equip.rig) grids.push(equip.rig.inst.container); if(equip.backpack) grids.push(equip.backpack.inst.container);
+    const stow=it=>{ if(!it) return; for(const g of grids){ if(g.add(it)===0) return; } };
+    // spare ammo of their caliber + odds of meds/nades/cash, stowed into the grids
+    if(k){ const cal=k.cal; const ammoId = cal==='556'?'ammo_556':cal==='762'?'ammo_762':'ammo_9mm';
+      stow(Inventory.newItem(ammoId, 15+Math.floor(Math.random()*30)));
+    } else for(let i=0;i<3;i++) stow(roll('enemy_drop'));
+    if(Math.random()<0.45) stow(roll('enemy_drop'));
+    if(Math.random()<0.30) stow(Inventory.newItem('med_bandage',1));
+    if(Math.random()<0.20) stow(Inventory.newItem('val_cash',1+Math.floor(Math.random()*3)));
+    const corpse={ equip, pos:e.group.position.clone(), label:(e.def.name||'Body')+"'s kit", cmesh:e.cmesh };
     corpses.push(corpse);
     World.addInteract({ pos:new T.Vector3(corpse.pos.x,1,corpse.pos.z), radius:2.6, key:'interact', label:'loot '+(e.def.name||'body').toLowerCase(), action:()=>UI.openLoot(corpse) });
   }
-  // sync the dead body's visible gear to what's still on the corpse grid
-  function reflectCorpse(c){ if(!c||!c.cmesh) return; const items=c.grid.items;
-    if(c.cmesh.gun) c.cmesh.gun.visible = items.some(i=>i.def.type==='weapon');
-    if(c.cmesh.plate) c.cmesh.plate.visible = items.some(i=>i.def.type==='armor');
-    if(c.cmesh.helmet) c.cmesh.helmet.visible = items.some(i=>i.def.type==='helmet'); }
+  // sync the dead body's visible gear to what's still equipped on the corpse
+  function reflectCorpse(c){ if(!c||!c.cmesh||!c.equip) return; const eq=c.equip;
+    if(c.cmesh.gun) c.cmesh.gun.visible = !!(eq.primary||eq.secondary);
+    if(c.cmesh.plate) c.cmesh.plate.visible = !!eq.armor;
+    if(c.cmesh.helmet) c.cmesh.helmet.visible = !!eq.helmet; }
   function openCrate(crate){
     const n=crate.rare?2+Math.floor(Math.random()*2):1+Math.floor(Math.random()*2);
     for(let i=0;i<n;i++){ const it=roll(crate.rare?'crate_rare':'crate_common'); spawnPickup(crate.pos.x+(Math.random()-.5)*1.6, crate.pos.z+(Math.random()-.5)*1.6, it); }

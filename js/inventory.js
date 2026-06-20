@@ -86,8 +86,34 @@ export function desItem(o){
 }
 
 export const Inventory = (function(){
-  let extGrid=null;                 // currently-open external container (corpse/crate)
-  function setExternal(g){ extGrid=g; }
+  // The currently-open external actor being looted (a corpse or a crate). A corpse
+  // is a STRUCTURED second actor mirroring the player: its own equip slots
+  // (primary/secondary/helmet/armor/rig/backpack) plus the nested grids inside its
+  // rig + backpack. A crate is just a flat grid. setExternal() normalises either
+  // shape into one descriptor: { equip:{slot:item}, grid:Grid|null }.
+  //   - equip : the corpse's equipped pieces (item instance or null per slot)
+  //   - grid  : a crate's single flat grid (null for corpses)
+  // The corpse's lootable grids (rig + backpack containers) are derived live from
+  // its equip via extGrids() so they always reflect what is still equipped.
+  let ext=null;
+  function setExternal(a){
+    if(!a){ ext=null; return; }
+    // a Grid (crate) → wrap as a flat container; an actor object → use as-is.
+    if(a instanceof Grid){ ext={ equip:null, grid:a }; return; }
+    ext={ equip:a.equip||null, grid:a.grid||null };
+  }
+  function externalActor(){ return ext; }
+  // grids belonging to the external actor: a crate's flat grid, or a corpse's
+  // equipped rig + backpack containers (in slot order, like the player's carried).
+  function extGrids(){
+    if(!ext) return [];
+    if(ext.grid) return [ext.grid];
+    if(!ext.equip) return [];
+    const gs=[];
+    if(ext.equip.rig) gs.push(ext.equip.rig.inst.container);
+    if(ext.equip.backpack) gs.push(ext.equip.backpack.inst.container);
+    return gs;
+  }
   // carried grids during a raid = equipped rig + backpack containers (in order)
   function carried(){
     const e=S.profile.equip, gs=[];
@@ -102,17 +128,20 @@ export const Inventory = (function(){
     for(const g of carried()){ if(g.add(item)===0){ Events.emit('inv:changed'); return true; } }
     Events.emit('inv:changed'); return false;
   }
-  // locate an item by uid across equip slots, stash, carried grids, external container
+  // locate an item by uid across player equip/stash/carried, then the external
+  // actor: its equip slots (corpse paper-doll) + its grids (crate / corpse rig+pack).
   function locate(uid){
     for(const slot of EQUIP_SLOTS){ const it=S.profile.equip[slot]; if(it&&it.uid===uid) return {where:'equip', slot, item:it}; }
+    if(ext&&ext.equip){ for(const slot of EQUIP_SLOTS){ const it=ext.equip[slot]; if(it&&it.uid===uid) return {where:'extequip', slot, item:it}; } }
     const grids=[{g:stash(),tag:'stash'}, ...carried().map(g=>({g,tag:'carried'}))];
-    if(extGrid) grids.push({g:extGrid,tag:'ext'});
+    for(const g of extGrids()) grids.push({g,tag:'ext'});
     for(const {g,tag} of grids){ const it=g.find(uid); if(it) return {where:'grid', grid:g, tag, item:it}; }
     return null;
   }
   function removeFrom(loc){
     if(loc.where==='grid') loc.grid.remove(loc.item.uid);
     else if(loc.where==='equip') S.profile.equip[loc.slot]=null;
+    else if(loc.where==='extequip' && ext&&ext.equip) ext.equip[loc.slot]=null;
   }
   // place an item into a grid at x,y,rot — merges onto a same-id stack if dropped on one
   function placeAt(item, grid, x, y, rot){
@@ -123,13 +152,18 @@ export const Inventory = (function(){
     if(grid.fits(item.def,x,y,rot,item.uid)){ item.x=x; item.y=y; item.rot=rot; if(!grid.items.includes(item)) grid.items.push(item); return true; }
     return false;
   }
+  // put a detached item back where it came from (rollback when a move fails)
+  function restore(loc, item){
+    if(loc.where==='grid'){ if(!placeAt(item, loc.grid, item.x, item.y, item.rot)) loc.grid.add(item); }
+    else if(loc.where==='equip'){ S.profile.equip[loc.slot]=item; }
+    else if(loc.where==='extequip' && ext&&ext.equip){ ext.equip[loc.slot]=item; }
+  }
   // drag/drop move: detach from wherever it is, place into target grid at cell; rollback on failure
   function move(uid, toGrid, x, y, rot){
     const loc=locate(uid); if(!loc) return false; const item=loc.item; const ox=item.x, oy=item.y, orot=item.rot;
     removeFrom(loc);
     if(placeAt(item, toGrid, x, y, rot)){ Events.emit('inv:changed'); return true; }
-    if(loc.where==='grid'){ if(!placeAt(item, loc.grid, ox, oy, orot)) loc.grid.add(item); }
-    else if(loc.where==='equip'){ S.profile.equip[loc.slot]=item; }
+    item.x=ox; item.y=oy; item.rot=orot; restore(loc, item);
     Events.emit('inv:changed'); return false;
   }
   // move into best free spot of a grid (used by "take all" / shift-click)
@@ -137,7 +171,7 @@ export const Inventory = (function(){
     const loc=locate(uid); if(!loc) return false; const item=loc.item;
     removeFrom(loc);
     if(toGrid.add(item)===0){ Events.emit('inv:changed'); return true; }
-    if(loc.where==='grid') loc.grid.add(item); else if(loc.where==='equip') S.profile.equip[loc.slot]=item;
+    restore(loc, item);
     Events.emit('inv:changed'); return false;
   }
   function slotFor(def){
@@ -238,5 +272,5 @@ export const Inventory = (function(){
     for(const p of pieces){ const it=p.it; it.inst.dura=Math.max(0, (typeof it.inst.dura==='number'?it.inst.dura:it.def.maxDura) - loss*(p.dr/drSum)); }
   }
 
-  return { Grid, carried, stash, addLoot, locate, move, quickTo, moveTo:quickTo, placeAt, setExternal, equip, installAttachment, installOn, removeAttachment, dropOrDestroy, sellValue, newItem, slotFor, gearStat, gearTotals, wearGear };
+  return { Grid, carried, stash, addLoot, locate, move, quickTo, moveTo:quickTo, placeAt, setExternal, externalActor, extGrids, equip, installAttachment, installOn, removeAttachment, dropOrDestroy, sellValue, newItem, slotFor, gearStat, gearTotals, wearGear };
 })();

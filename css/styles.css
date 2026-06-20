@@ -238,6 +238,16 @@
   .gearstats>div{flex:1;border:1px solid #1c2228;border-radius:6px;padding:6px 4px;text-align:center;background:#0c1014;}
   .gearstats .gl{display:block;font-family:var(--mono);font-size:8px;letter-spacing:1px;color:var(--dim);}
   .gearstats .gv{display:block;font-family:var(--cond);font-size:18px;color:var(--text);margin-top:2px;}
+  /* structured corpse loot — two mirrored halves: corpse (left) | you (right) */
+  .lootcols{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap;}
+  .lootside{flex:1 1 360px;min-width:0;}
+  .lootside+.lootside{border-left:1px solid var(--line);padding-left:22px;}
+  .lootsideT{font-family:var(--mono);font-size:11px;letter-spacing:3px;color:var(--dim);text-transform:uppercase;margin:0 0 10px;}
+  .lootside .invwrap{gap:14px;}
+  /* a corpse paper-doll is drag-source only: tinted + non-equip cursor on slots */
+  .corpsecol .eslot{cursor:grab;}
+  .corpsecol .eslot:not(.full){border-color:#241c1c;}
+  .corpsecol .dollfig{background:radial-gradient(ellipse at 50% 30%,#1d1518,#100c0d);}
   .actions{margin-top:14px;border-top:1px solid var(--line);padding-top:10px;}
   .actbtns{display:flex;gap:8px;flex-wrap:wrap;}
   .actbtns .btn{width:auto;margin-top:0;padding:8px 12px;font-size:14px;}
@@ -428,4 +438,8 @@
     .col{flex:1 1 100%;}
     .gridscroll{max-height:none;}
     .eslots{justify-content:flex-start;}
+    /* stack the corpse | you halves vertically on narrow screens */
+    .lootcols{gap:14px;}
+    .lootside{flex:1 1 100%;}
+    .lootside+.lootside{border-left:0;padding-left:0;border-top:1px solid var(--line);padding-top:14px;}
   }
