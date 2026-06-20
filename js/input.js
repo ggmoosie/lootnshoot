@@ -15,7 +15,7 @@ import { Allies } from "./allies.js";
 
 export const Input = (function(){
   const keys={}; const isTouch = window.matchMedia('(pointer: coarse)').matches;
-  const st={ keys, firing:false, ads:false, crouch:false, touchMove:{x:0,y:0}, locked:false, isTouch };
+  const st={ keys, firing:false, ads:false, crouch:false, touchMove:{x:0,y:0}, locked:false, isTouch, lean:0 };
   const SENS=0.0022;
 
   // ---- keybindings (read live from profile.settings, fallback to defaults) ----
@@ -63,41 +63,97 @@ export const Input = (function(){
     GFX.pitch.rotation.x = clamp(GFX.pitch.rotation.x - e.movementY*sens()*invY(), -1.5, 1.5);
   });
 
-  // ---- touch ----
+  // ---- touch (PUBG-style mobile HUD) ----
+  // Reuses the SAME intents as keyboard/mouse — these handlers only set the
+  // existing st.firing/st.ads/st.crouch/st.lean flags or call the existing
+  // Weapons/Player/World/UI actions. No game logic is rewired here.
   if(st.isTouch) document.body.classList.add('touch');
   (function touch(){
-    const joy=document.getElementById('joy'), knob=document.getElementById('joyK'), cv=GFX.dom;
-    let joyId=null,jx=0,jy=0,lookId=null,lx=0,ly=0;
-    function kn(t){ const dx=t.clientX-jx,dy=t.clientY-jy,max=52,d=Math.hypot(dx,dy),cl=Math.min(d,max);
+    const $=id=>document.getElementById(id);
+    const cv=GFX.dom;
+
+    // ---- (1) left floating joystick: drag-anywhere origin within #joyZone ----
+    const zone=$('joyZone'), joy=$('joy'), knob=$('joyK');
+    let joyId=null,jx=0,jy=0;
+    const KMAX=()=>Math.min(joy.clientWidth,joy.clientHeight)*0.5*0.82 || 52;
+    function placeJoy(cx,cy){ // recentre the visible base under the thumb (clamped to viewport)
+      const r=joy.getBoundingClientRect(), w=r.width, h=r.height;
+      const x=clamp(cx-w/2,4,innerWidth-w-4), y=clamp(cy-h/2,4,innerHeight-h-4);
+      joy.style.left=x+'px'; joy.style.bottom='auto'; joy.style.top=y+'px';
+      jx=x+w/2; jy=y+h/2;
+    }
+    function kn(t){ const max=KMAX(); const dx=t.clientX-jx,dy=t.clientY-jy,d=Math.hypot(dx,dy),cl=Math.min(d,max);
       const nx=d?dx/d*cl:0, ny=d?dy/d*cl:0; knob.style.transform=`translate(calc(-50% + ${nx}px),calc(-50% + ${ny}px))`;
       st.touchMove.x=nx/max; st.touchMove.y=ny/max; }
-    joy.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();const t=e.changedTouches[0];joyId=t.identifier;const r=joy.getBoundingClientRect();jx=r.left+r.width/2;jy=r.top+r.height/2;kn(t);},{passive:false});
-    joy.addEventListener('touchmove',e=>{e.preventDefault();e.stopPropagation();for(const t of e.changedTouches)if(t.identifier===joyId)kn(t);},{passive:false});
-    const ej=e=>{for(const t of e.changedTouches)if(t.identifier===joyId){joyId=null;st.touchMove.x=0;st.touchMove.y=0;knob.style.transform='translate(-50%,-50%)';}};
-    joy.addEventListener('touchend',ej);joy.addEventListener('touchcancel',ej);
+    function resetJoy(){ joyId=null; st.touchMove.x=0; st.touchMove.y=0; knob.style.transform='translate(-50%,-50%)';
+      joy.style.left=''; joy.style.top=''; joy.style.bottom=''; joy.style.opacity=''; }
+    zone.addEventListener('touchstart',e=>{ if(joyId!==null) return; e.preventDefault();e.stopPropagation();
+      const t=e.changedTouches[0]; joyId=t.identifier; joy.style.opacity='1'; placeJoy(t.clientX,t.clientY); kn(t); },{passive:false});
+    zone.addEventListener('touchmove',e=>{ e.preventDefault();e.stopPropagation(); for(const t of e.changedTouches)if(t.identifier===joyId)kn(t); },{passive:false});
+    const ej=e=>{ for(const t of e.changedTouches)if(t.identifier===joyId) resetJoy(); };
+    zone.addEventListener('touchend',ej); zone.addEventListener('touchcancel',ej);
+
+    // ---- look: drag anywhere on the 3D canvas ----
+    let lookId=null,lx=0,ly=0;
     cv.addEventListener('touchstart',e=>{ if(S.mode!==MODE.RAID&&S.mode!==MODE.HUB)return; for(const t of e.changedTouches)if(lookId===null){lookId=t.identifier;lx=t.clientX;ly=t.clientY;} },{passive:false});
     cv.addEventListener('touchmove',e=>{ if(lookId===null)return; e.preventDefault(); for(const t of e.changedTouches)if(t.identifier===lookId){
       GFX.yaw.rotation.y-=(t.clientX-lx)*0.005; GFX.pitch.rotation.x=clamp(GFX.pitch.rotation.x-(t.clientY-ly)*0.005,-1.5,1.5); lx=t.clientX; ly=t.clientY; } },{passive:false});
     const el=e=>{for(const t of e.changedTouches)if(t.identifier===lookId)lookId=null;};
     cv.addEventListener('touchend',el);cv.addEventListener('touchcancel',el);
-    const hold=(id,on,off)=>{ const el=document.getElementById(id);
-      el.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();el.classList.add('active');on&&on();},{passive:false});
-      const up=e=>{if(e.cancelable)e.preventDefault();el.classList.remove('active');off&&off();}; el.addEventListener('touchend',up);el.addEventListener('touchcancel',up); };
+
+    // ---- generic hold/tap helpers (multi-touch safe: tracks its own pointer id) ----
+    const hold=(id,on,off)=>{ const el=$(id); if(!el) return; let pid=null;
+      el.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();if(pid!==null)return;pid=e.changedTouches[0].identifier;el.classList.add('active');on&&on();},{passive:false});
+      const up=e=>{ for(const t of e.changedTouches)if(t.identifier===pid){pid=null;el.classList.remove('active');off&&off();} };
+      el.addEventListener('touchend',up);el.addEventListener('touchcancel',up); };
+    const tap=(id,fn)=>{ const el=$(id); if(!el) return;
+      el.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();el.classList.add('active');fn();},{passive:false});
+      const up=e=>{if(e.cancelable)e.preventDefault();el.classList.remove('active');}; el.addEventListener('touchend',up);el.addEventListener('touchcancel',up); };
+
+    // ---- (2) FIRE + ADS ----
     hold('bFire',()=>st.firing=true,()=>st.firing=false);
-    hold('bAds',()=>st.ads=true,()=>st.ads=false);
-    hold('bRld',()=>{ if(S.mode===MODE.RAID) Weapons.reload(); });
-    hold('bUse',()=>{ World.interactAny(); });
-    hold('bNade',()=>{ if(S.mode===MODE.RAID) Weapons.throwGrenade(); });
-    hold('bHeal',()=>{ if(S.mode===MODE.RAID) Player.useMed(); });
-    hold('bSwap',()=>{ if(S.mode===MODE.RAID) Weapons.switchTo(S.player.activeSlot==='primary'?'secondary':'primary'); });
+    hold('bAds', ()=>st.ads=true,  ()=>st.ads=false);
+
+    // ---- (3) reload / crouch / jump + use / nade / med ----
+    tap('bRld', ()=>{ if(S.mode===MODE.RAID) Weapons.reload(); });
+    tap('bUse', ()=>{ World.interactAny(); });
+    tap('bNade',()=>{ if(S.mode===MODE.RAID) Weapons.throwGrenade(); });
+    tap('bHeal',()=>{ if(S.mode===MODE.RAID) Player.useMed(); });
     hold('bJump',()=>{ keys[code('jump')]=true; },()=>{ keys[code('jump')]=false; });
-    const crouchBtn=document.getElementById('bCrouch');
+    const crouchBtn=$('bCrouch');
     crouchBtn.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();st.crouch=!st.crouch;crouchBtn.classList.toggle('active',st.crouch);},{passive:false});
-    const modeBtn=document.getElementById('bMode');
+
+    // ---- (4) lean / peek (presentational camera roll — not collision/movement) ----
+    hold('bLeanL',()=>st.lean=-1,()=>{ if(st.lean<0) st.lean=0; });
+    hold('bLeanR',()=>st.lean= 1,()=>{ if(st.lean>0) st.lean=0; });
+
+    // ---- (5) weapon / throwable quick-bar ----
+    const qb={ primary:()=>{ if(S.mode===MODE.RAID) Weapons.switchTo('primary'); },
+               secondary:()=>{ if(S.mode===MODE.RAID) Weapons.switchTo('secondary'); },
+               nade:()=>{ if(S.mode===MODE.RAID) Weapons.throwGrenade(); },
+               med:()=>{ if(S.mode===MODE.RAID) Player.useMed(); } };
+    document.querySelectorAll('#quickbar .qslot').forEach(slot=>{
+      slot.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();slot.classList.add('active');const a=slot.dataset.act;qb[a]&&qb[a]();},{passive:false});
+      const up=e=>{if(e.cancelable)e.preventDefault();slot.classList.remove('active');}; slot.addEventListener('touchend',up);slot.addEventListener('touchcancel',up);
+    });
+
+    // ---- top-right utility: fire-mode, sprint toggle, bag ----
+    const modeBtn=$('bMode');
     modeBtn.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();if(S.mode===MODE.RAID){Weapons.cycleMode();const w=Weapons.activeItem();if(w)modeBtn.textContent=Weapons.modeOf(w).toUpperCase();}},{passive:false});
-    const run=document.getElementById('bRun');
+    const run=$('bRun');
     run.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();const on=!keys['ShiftLeft'];keys['ShiftLeft']=on;run.classList.toggle('active',on);},{passive:false});
-    hold('bInv',()=>{ if(S.mode===MODE.HUB||S.mode===MODE.RAID) UI.toggleInventory(); });
+    tap('bInv',()=>{ if(S.mode===MODE.HUB||S.mode===MODE.RAID) UI.toggleInventory(); });
+
+    // ---- lean roll: lerp camera.rotation.z toward the held lean (purely visual) ----
+    if(st.isTouch){
+      const LEAN=0.18, base=GFX.camera.position.x; let cur=0;
+      (function leanLoop(){ requestAnimationFrame(leanLoop);
+        const target=(S.mode===MODE.RAID? st.lean*LEAN : 0);
+        cur += (target-cur)*0.18;
+        GFX.camera.rotation.z = -cur;
+        GFX.camera.position.x = base + cur*0.9;
+      })();
+    }
   })();
 
   Object.assign(st, { down, code, actionFor, beginCapture, applySettings, relock });

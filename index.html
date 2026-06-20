@@ -48,25 +48,60 @@
   <div id="feed"></div>
 </div>
 
-<!-- ============ TOUCH ============ -->
+<!-- ============ TOUCH — PUBG-style mobile HUD ============ -->
+<!-- Pointer-events:none on the root; every interactive control re-enables it. -->
 <div id="touch">
-  <div id="joy"><div id="joyK"></div></div>
-  <div id="utilpad">
-    <div id="bInv" class="tb sm">BAG</div>
-    <div id="bRun" class="tb sm">RUN</div>
-    <div id="bMode" class="tb sm">AUTO</div>
+
+  <!-- (1) left floating movement joystick (drag-anywhere origin within its zone) -->
+  <div id="joyZone">
+    <div id="joy"><div id="joyR"></div><div id="joyK"></div></div>
   </div>
+
+  <!-- (4) lean / peek buttons, flanking the screen edges at thumb height -->
+  <div id="bLeanL" class="tb lean" aria-label="Lean left">◀</div>
+  <div id="bLeanR" class="tb lean" aria-label="Lean right">▶</div>
+
+  <!-- (2)+(3) right-hand action cluster: big FIRE, ADS scope, and the stance/util pad -->
+  <div id="firepad">
+    <div id="bAds"  class="tb scope" aria-label="Aim down sights">⊕</div>
+    <div id="bFire" class="tb fire" aria-label="Fire"></div>
+  </div>
+
   <div id="actpad">
-    <div id="bRld"    class="tb" style="grid-area:1/1">RLD</div>
-    <div id="bNade"   class="tb" style="grid-area:1/2">NADE</div>
-    <div id="bUse"    class="tb" style="grid-area:1/3">USE</div>
-    <div id="bAds"    class="tb" style="grid-area:2/1">ADS</div>
-    <div id="bFire"   class="tb fire">FIRE</div>
-    <div id="bSwap"   class="tb" style="grid-area:2/3">SWAP</div>
-    <div id="bCrouch" class="tb" style="grid-area:3/1">CRCH</div>
-    <div id="bJump"   class="tb" style="grid-area:3/2">JUMP</div>
-    <div id="bHeal"   class="tb" style="grid-area:3/3">MED</div>
+    <div id="bUse"    class="tb act" aria-label="Use / interact"><i>USE</i></div>
+    <div id="bNade"   class="tb act" aria-label="Throwable"><i>NADE</i></div>
+    <div id="bRld"    class="tb act" aria-label="Reload"><i>RLD</i></div>
+    <div id="bJump"   class="tb act" aria-label="Jump"><i>JUMP</i></div>
+    <div id="bCrouch" class="tb act" aria-label="Crouch / prone"><i>CRCH</i></div>
+    <div id="bHeal"   class="tb act" aria-label="Med"><i>MED</i></div>
   </div>
+
+  <!-- (5) weapon / throwable quick-bar, bottom-center -->
+  <div id="quickbar">
+    <div id="qbPrimary"   class="qslot" data-act="primary">
+      <span class="qi">①</span><span class="ql">PRIMARY</span><span class="qa">—</span></div>
+    <div id="qbSecondary" class="qslot" data-act="secondary">
+      <span class="qi">②</span><span class="ql">SECOND</span><span class="qa">—</span></div>
+    <div id="qbNade"      class="qslot" data-act="nade">
+      <span class="qi">✦</span><span class="ql">NADE</span><span class="qa">0</span></div>
+    <div id="qbMed"       class="qslot" data-act="med">
+      <span class="qi">✚</span><span class="ql">MED</span><span class="qa">0</span></div>
+  </div>
+
+  <!-- top-right utility (bag / sprint toggle / fire-mode) -->
+  <div id="utilpad">
+    <div id="bRun"  class="tb sm" aria-label="Sprint">RUN</div>
+    <div id="bMode" class="tb sm" aria-label="Fire mode">AUTO</div>
+    <div id="bInv"  class="tb sm" aria-label="Inventory">BAG</div>
+  </div>
+
+  <!-- (6) top-left kills / alive readout (minimap is the shared #mapwrap) -->
+  <div id="killbar">
+    <div class="kb"><span id="kKills">0</span><i>KILLS</i></div>
+    <div class="kbsep"></div>
+    <div class="kb"><span id="kAlive">0</span><i>ALIVE</i></div>
+  </div>
+
 </div>
 <div id="rot"><div>↻ &nbsp;Rotate to landscape</div></div>
 

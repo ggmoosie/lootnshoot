@@ -50,7 +50,27 @@ export const UI = (function(){
     document.querySelectorAll('.wslot').forEach(s=>s.classList.toggle('on', s.dataset.s===pl.activeSlot));
     $('cr').textContent=pr.credits; $('lvl').textContent=`LVL ${pr.level}`;
     $('nade').textContent = S.mode===MODE.RAID? `Grenades: ${nadeCount()}`:'';
+    if(Input.isTouch) refreshTouchHUD(pl,pr);
   }
+  // mobile-only HUD: kills/alive readout + the weapon/throwable quick-bar.
+  // Reads the same state the desktop ammo/slots panel does — no new game data.
+  function refreshTouchHUD(pl,pr){
+    const inRaid=S.mode===MODE.RAID;
+    const kK=$('kKills'), kA=$('kAlive');
+    if(kK) kK.textContent = (S.run&&S.run.kills)||0;
+    if(kA) kA.textContent = inRaid? Enemies.aliveCount():0;
+    // quick-bar: primary / secondary weapons (icon = mag ammo) + nade / med counts
+    const eq=pr.equip||{};
+    const qslot=(id,item,active)=>{ const el=$(id); if(!el) return; const a=el.querySelector('.qa');
+      el.classList.toggle('empty',!item); el.classList.toggle('on',!!active);
+      if(a) a.textContent = item? (item.inst?item.inst.ammo:0) : '—'; };
+    qslot('qbPrimary',   eq.primary,   pl.activeSlot==='primary');
+    qslot('qbSecondary', eq.secondary, pl.activeSlot==='secondary');
+    const nQ=$('qbNade'), nMed=$('qbMed');
+    if(nQ){ const n=nadeCount(); nQ.querySelector('.qa').textContent=n; nQ.classList.toggle('empty',!inRaid||n<=0); }
+    if(nMed){ const m=medCount(); nMed.querySelector('.qa').textContent=m; nMed.classList.toggle('empty',!inRaid||m<=0); }
+  }
+  function medCount(){ let n=0; for(const g of Inventory.carried()) for(const t of g.items) if(t.def.type==='med') n+=t.qty; return n; }
   function reserveOf(st){ if(!st) return 0; const grids=S.mode===MODE.RAID?Inventory.carried():[Inventory.stash()]; let n=0; for(const g of grids) for(const t of g.items) if(t.def.type==='ammo'&&t.def.cal===st.cal) n+=t.qty; return n; }
   function nadeCount(){ let n=0; for(const g of Inventory.carried()) n+=g.count('nade_frag'); return n; }
 
@@ -468,7 +488,7 @@ export const UI = (function(){
   Events.on('weapon:changed', refreshHUD);
   Events.on('progress:changed', refreshHUD);
   Events.on('inv:changed', ()=>{ if($('ovInv').classList.contains('show')) renderInventory(); refreshHUD(); });
-  Events.on('threats:changed', ()=> $('thN').textContent=Enemies.aliveCount());
+  Events.on('threats:changed', ()=>{ $('thN').textContent=Enemies.aliveCount(); if(Input.isTouch) refreshTouchHUD(S.player,S.profile); });
 
   return { setObjective, prompt, hit, dmgDir, banner, flashReload, toast, refreshHUD, renderStart, toggleInventory, openStation,
            openVendor, openCraft, openSkills, openLoot, openSettings, openMod, showExtractChoice, showResult, pause, resume, closeMenus };
