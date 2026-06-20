@@ -504,34 +504,72 @@ export const UI = (function(){
   }
 
   // ---------- VENDOR ----------
-  function openVendor(){ openOverlay('ovVendor'); renderVendor(); }
+  // Three tabs: Buy (live stock + restock timers), Sell (from stash, builds rep),
+  // and Buy-back (re-purchase what you recently sold). A reputation bar sits under
+  // the header — higher standing = cheaper buys + deeper, faster-restocking stock.
+  let vendorTick=null;
+  function openVendor(){ openOverlay('ovVendor'); renderVendor();
+    // live countdown for restock timers while the buy tab is open (1s cadence)
+    clearInterval(vendorTick);
+    vendorTick=setInterval(()=>{ if($('ovVendor').classList.contains('show') && vendorTab==='buy') renderVendor(); else { clearInterval(vendorTick); vendorTick=null; } }, 1000);
+  }
+  function closeVendor(){ clearInterval(vendorTick); vendorTick=null; closeMenus(); }
   let vendorTab='buy';
+  function fmtRestock(s){ if(s<=0) return ''; const m=Math.floor(s/60), ss=String(s%60).padStart(2,'0'); return m?`${m}:${ss}`:`${s}s`; }
   function renderVendor(){
     const cr=S.profile.credits;
+    const rep=Vendor.repInfo();
     let body='';
     if(vendorTab==='buy'){
-      body=`<div class="shopgrid">`+DATA.vendor.map(id=>{ const d=DATA.items[id], p=Vendor.price(id), can=cr>=p;
+      body=`<div class="shopgrid">`+DATA.vendor.map(id=>{ const d=DATA.items[id]; if(!d) return '';
+        const p=Vendor.price(id), si=Vendor.stockInfo(id), out=si.qty<=0, can=cr>=p&&!out;
+        const stockLine = out
+          ? `<div class="shopmeta" style="color:var(--bad)">Out · ${si.restockIn?'next '+fmtRestock(si.restockIn):'restocking'}</div>`
+          : `<div class="shopmeta">Stock ${si.qty}/${si.max}${si.restockIn?` · +1 in ${fmtRestock(si.restockIn)}`:''}</div>`;
         return `<div class="shopcard r-${d.rarity||1}">
           <div class="shopic">${iconFor(d)}</div>
           <div class="shopnm">${d.name}</div><div class="shopmeta">${d.type}${d.size?` · ${d.size[0]}×${d.size[1]}`:''}</div>
-          <button class="shopbuy ${can?'':'no'}" data-buy="${id}">${p}c</button></div>`; }).join('')+`</div>`;
-    } else {
+          ${stockLine}
+          <button class="shopbuy ${can?'':'no'}" data-buy="${id}" ${out?'disabled':''}>${out?'Out':p+'c'}</button></div>`; }).join('')+`</div>`;
+    } else if(vendorTab==='sell'){
       const items=Inventory.stash().items;
       body = items.length ? `<div class="shopgrid">`+items.map(it=>`<div class="shopcard r-${it.def.rarity||1}">
           <div class="shopic">${iconFor(it.def)}</div>
           <div class="shopnm">${it.def.name}</div><div class="shopmeta">${it.def.type}${it.qty>1?` · ×${it.qty}`:''}</div>
           <button class="shopbuy sell" data-sell="${it.uid}">+${Inventory.sellValue(it)}c</button></div>`).join('')+`</div>`
         : '<div class="mini" style="padding:30px 0;text-align:center">Stash is empty — bring back loot to sell.</div>';
+    } else { // buyback
+      const list=Vendor.buybackList();
+      body = list.length ? `<div class="shopgrid">`+list.map(b=>{ const d=DATA.items[b.id]||{}; const can=cr>=b.price;
+        return `<div class="shopcard r-${d.rarity||1}">
+          <div class="shopic">${iconFor(d)}</div>
+          <div class="shopnm">${b.name}</div><div class="shopmeta">recently sold${b.qty>1?` · ×${b.qty}`:''}</div>
+          <button class="shopbuy ${can?'':'no'}" data-bb="${b.uid}">${b.price}c</button></div>`; }).join('')+`</div>`
+        : '<div class="mini" style="padding:30px 0;text-align:center">Nothing to buy back — items you sell show up here.</div>';
     }
+    // reputation bar (standing + progress to the next tier + the active buy discount)
+    const disc=Math.round((1-rep.buyMult)*100);
+    const repBar=`<div style="margin:2px 0 14px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;font-family:var(--mono);font-size:11px;letter-spacing:1px;text-transform:uppercase;">
+        <span style="color:var(--amber)">Standing · ${rep.name}${disc>0?` <span style="color:var(--go)">(−${disc}% buys)</span>`:''}</span>
+        <span style="color:var(--dim)">${rep.next?`${rep.toNext}c to ${rep.next}`:'Max standing'}</span></div>
+      <div style="height:6px;border-radius:4px;background:#0c0f12;border:1px solid var(--line);margin-top:5px;overflow:hidden;">
+        <div style="height:100%;width:${Math.round(rep.progress*100)}%;background:linear-gradient(90deg,var(--amber-d),var(--amber));"></div></div></div>`;
     $('vendorCard').innerHTML=`<div class="eb">Black Market // Trader</div>
       <div class="shophead"><h1 style="margin:0">Trade</h1><div class="creditpill">💰 ${cr}c</div></div>
-      <div class="tabs"><button class="tab ${vendorTab==='buy'?'on':''}" data-tab="buy">Buy</button><button class="tab ${vendorTab==='sell'?'on':''}" data-tab="sell">Sell</button></div>
+      ${repBar}
+      <div class="tabs">
+        <button class="tab ${vendorTab==='buy'?'on':''}" data-tab="buy">Buy</button>
+        <button class="tab ${vendorTab==='sell'?'on':''}" data-tab="sell">Sell</button>
+        <button class="tab ${vendorTab==='buyback'?'on':''}" data-tab="buyback">Buy-back</button>
+      </div>
       ${body}
       <div class="btn" id="vClose" style="margin-top:16px;width:auto;display:inline-block"><span class="k">ESC</span> Close</div>`;
-    $('vClose').onclick=closeMenus;
+    $('vClose').onclick=closeVendor;
     $('vendorCard').querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ vendorTab=b.dataset.tab; renderVendor(); });
     $('vendorCard').querySelectorAll('[data-buy]').forEach(b=>b.onclick=()=>{ Vendor.buy(b.dataset.buy); Audio.play('ui'); renderVendor(); refreshHUD(); });
     $('vendorCard').querySelectorAll('[data-sell]').forEach(b=>b.onclick=()=>{ Vendor.sell(b.dataset.sell*1); Audio.play('pickup'); renderVendor(); refreshHUD(); });
+    $('vendorCard').querySelectorAll('[data-bb]').forEach(b=>b.onclick=()=>{ Vendor.buyback(b.dataset.bb); Audio.play('ui'); renderVendor(); refreshHUD(); });
   }
 
   // ---------- CRAFTING ----------
@@ -586,10 +624,65 @@ export const UI = (function(){
   }
 
   // ---------- RESULT / PAUSE ----------
-  function showResult({died,title,sub,rows}){ S.setMode(MODE.RESULT); hideAll(); $('ovResult').classList.add('show');
-    $('resultCard').innerHTML=`<div class="eb">${died?'Raid Report // KIA':'Raid Report // Success'}</div><h1 class="${died?'bad':'good'}">${title}</h1>
-      <p class="sub">${sub}</p>${rows.map(r=>`<div class="row"><span>${r[0]}</span><b>${r[1]}</b></div>`).join('')}
-      <div class="btn" id="rBack" style="margin-top:14px"><span class="k">▶</span> Return to safehouse</div>`;
+  // Full run-summary screen. Raid passes a structured payload (loot banked vs lost,
+  // kills, depth, XP, credits, objective + bonus results). A legacy {rows:[[k,v]]}
+  // shape is still accepted (falls back to the old plain table) so nothing else that
+  // calls showResult breaks. Styled like the existing result card, just fuller.
+  function showResult(p){ S.setMode(MODE.RESULT); hideAll(); $('ovResult').classList.add('show');
+    const died=!!p.died;
+    const head=`<div class="eb">${died?'Raid Report // KIA':'Raid Report // Success'}</div>`
+      +`<h1 class="${died?'bad':'good'}">${p.title||(died?'You Died':'Extracted')}</h1>`
+      +(p.sub?`<p class="sub">${p.sub}</p>`:'');
+    // legacy fallback: just render the supplied rows.
+    if(p.rows && !p.loot){
+      $('resultCard').innerHTML = head
+        + p.rows.map(r=>`<div class="row"><span>${r[0]}</span><b>${r[1]}</b></div>`).join('')
+        + `<div class="btn" id="rBack" style="margin-top:14px"><span class="k">▶</span> Return to safehouse</div>`;
+      $('rBack').onclick=()=>{ hideAll(); S.run=null; World.buildHub(); };
+      return;
+    }
+    const L=p.loot||{carried:0,banked:0,lost:0,mult:1};
+    const sec = i=>String.fromCharCode(65+(i||0));
+    // inline styles keep this self-contained (no shared stylesheet edit); colors
+    // come from the existing palette vars so it matches the result-card aesthetic.
+    const col={good:'var(--go)',bad:'var(--bad)',warn:'var(--amber)',neutral:'var(--dim)'};
+    const objCol=(p.objective&&col[p.objective.state])||'var(--dim)';
+    const secHdr='font-family:var(--mono);font-size:11px;letter-spacing:3px;text-transform:uppercase;color:var(--amber);margin:18px 0 4px;';
+    // headline loot banner: green banked on extract, red lost on death.
+    const lootBanner = died
+      ? `<div style="border:1px solid var(--bad);background:rgba(216,69,62,.1);border-radius:8px;padding:16px 18px;margin:6px 0 4px;text-align:center;">
+           <div style="font-family:var(--mono);font-size:11px;letter-spacing:3px;text-transform:uppercase;color:var(--dim);">Loot lost</div>
+           <div style="font-family:var(--cond);font-weight:800;font-size:40px;color:var(--bad);line-height:1.1;">−${L.lost}c</div></div>`
+      : `<div style="border:1px solid var(--go);background:rgba(87,192,107,.1);border-radius:8px;padding:16px 18px;margin:6px 0 4px;text-align:center;">
+           <div style="font-family:var(--mono);font-size:11px;letter-spacing:3px;text-transform:uppercase;color:var(--dim);">Loot banked</div>
+           <div style="font-family:var(--cond);font-weight:800;font-size:40px;color:var(--go);line-height:1.1;">+${L.banked}c</div>
+           <div style="font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:2px;">${L.carried}c carried × ${(L.mult||1).toFixed(2)} extract bonus</div></div>`;
+    // tiles: kills / depth / xp (compact stat grid, reuses the result-card vibe).
+    const tileWrap='display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0 4px;';
+    const tileCss='border:1px solid var(--line);border-radius:8px;background:linear-gradient(160deg,#11171c,#0b0e12);padding:12px 8px;text-align:center;';
+    const tiles=[
+      ['Kills', p.kills||0],
+      ['Depth', `Sector ${sec(p.maxDepth!=null?p.maxDepth:p.depth)}`],
+      ['XP earned', `+${p.xp||0}`],
+    ].map(t=>`<div style="${tileCss}"><div style="font-family:var(--cond);font-weight:800;font-size:26px;color:var(--amber);line-height:1;">${t[1]}</div>
+       <div style="font-family:var(--mono);font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--dim);margin-top:5px;">${t[0]}</div></div>`).join('');
+    // objective + bonus recap.
+    const obj = p.objective ? `<div class="row"><span>Objective</span><b style="color:${objCol}">${p.objective.label}</b></div>` : '';
+    const bonuses = (p.bonuses&&p.bonuses.length)
+      ? p.bonuses.map(b=>`<div class="row"><span>${b.done?'✓':'✗'} ${b.label}</span><b style="color:${b.done?'var(--go)':'var(--dim)'}">${b.done?'+'+b.reward+'c':'—'}</b></div>`).join('')
+      : '';
+    // credits ledger: before -> after, with the delta.
+    const delta=(p.creditsAfter!=null&&p.creditsBefore!=null)?(p.creditsAfter-p.creditsBefore):null;
+    const credits = (p.creditsAfter!=null)
+      ? `<div class="row"><span>Credits</span><b>${p.creditsBefore!=null?p.creditsBefore+'c → ':''}${p.creditsAfter}c`
+        + (delta!=null?` <span style="color:${delta>=0?'var(--go)':'var(--bad)'}">(${delta>=0?'+':''}${delta}c)</span>`:'') + `</b></div>`
+      : '';
+    $('resultCard').innerHTML = head
+      + lootBanner
+      + `<div style="${tileWrap}">${tiles}</div>`
+      + (obj||bonuses?`<div style="${secHdr}">Objectives</div>${obj}${bonuses}`:'')
+      + (credits?`<div style="${secHdr}">Wallet</div>${credits}`:'')
+      + `<div class="btn" id="rBack" style="margin-top:16px"><span class="k">▶</span> Return to safehouse</div>`;
     $('rBack').onclick=()=>{ hideAll(); S.run=null; World.buildHub(); };
   }
   function pause(){ if(S.mode!==MODE.RAID) return; S.setMode(MODE.PAUSE); hideAll(); $('ovPause').classList.add('show');
