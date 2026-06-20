@@ -36,7 +36,7 @@ DATA.items = {
   mat_scrap:{name:'Scrap', type:'material', size:[1,1], stack:30, value:18, rarity:1},
   mat_elec:{name:'Electronics', type:'material', size:[1,1], stack:15, value:60, rarity:2},
   mat_filament:{name:'Filament', type:'material', size:[1,1], stack:30, value:25, rarity:1},
-  val_cash:{name:'Cash Stack', type:'valuable', size:[1,1], stack:50, value:120, rarity:2},
+  val_cash:{name:'Cash Stack', type:'valuable', bank:true, size:[1,1], stack:50, value:120, rarity:2},
   val_gold:{name:'Gold Bar', type:'valuable', size:[1,2], value:1400, rarity:4},
   drone_kit:{name:'Recon Drone Kit', type:'deployable', deploy:'drone', size:[2,2], value:900, rarity:3},
   key_office:{name:'Office Key', type:'key', size:[1,1], value:400, rarity:3},
@@ -877,7 +877,9 @@ DATA.stops.roles = function(i){
 // ─── 5. NEW ITEMS (meds / throwables / valuables / materials) ────────────────
 // Registered into DATA.items exactly like the originals. Meds reuse the
 // consumables/Status model; throwables reuse DATA.throwables; valuables/materials
-// are inert stacks (loot.js banks valuables, crafting reads materials).
+// are inert stacks. Valuables flagged `bank:true` (cash/coins) auto-convert to bag
+// value on pickup; the rest (gold/watch/diamond/artifact) are CARRIED loot you
+// extract and SELL at the vendor. crafting reads materials.
 Object.assign(DATA.items, {
   // --- meds ---
   med_surgery:{name:'Surgical Kit', type:'med', use:'surgery', heal:120, cure:'bleed', size:[2,2], value:520, rarity:4},
@@ -888,11 +890,11 @@ Object.assign(DATA.items, {
   nade_emp:{name:'EMP Grenade', type:'throwable', throw:'emp',   dmg:0,   radius:8, size:[1,1], stack:2, value:200, rarity:3},
   nade_gas:{name:'Gas Grenade', type:'throwable', throw:'gas',   dmg:8,   radius:7, size:[1,1], stack:2, value:160, rarity:2},
   throw_knife:{name:'Throwing Knife', type:'throwable', throw:'knife', dmg:70, radius:1, size:[1,1], stack:5, value:60, rarity:1},
-  // --- valuables (loot.js banks these straight to bag value on pickup) ---
+  // --- valuables (carried loot — extract & SELL at the vendor; not auto-banked) ---
   val_watch:{name:'Luxury Watch',  type:'valuable', size:[1,1], value:650,  rarity:3},
   val_diamond:{name:'Raw Diamond', type:'valuable', size:[1,1], stack:10, value:900, rarity:5},
   val_artifact:{name:'Relic Idol', type:'valuable', size:[2,2], value:2200, rarity:5},
-  val_coins:{name:'Coin Roll',     type:'valuable', size:[1,1], stack:40, value:80, rarity:2},
+  val_coins:{name:'Coin Roll',     type:'valuable', bank:true, size:[1,1], stack:40, value:80, rarity:2},
   // --- materials (crafting inputs; inert stacks) ---
   mat_powder:{name:'Gunpowder',    type:'material', size:[1,1], stack:30, value:30, rarity:2},
   mat_steel:{name:'Steel Plate',   type:'material', size:[1,2], stack:10, value:90, rarity:2},

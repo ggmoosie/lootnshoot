@@ -121,17 +121,29 @@ export const World = (function(){
       for(const c of colliders){ if(c.open) continue;
         if(c.top==null || c.top>CLIMB_MAX) continue;            // too tall to surmount
         if(px<c.minX-0.1||px>c.maxX+0.1||pz<c.minZ-0.1||pz>c.maxZ+0.1) continue; // not this box
-        // depth of the box along the travel direction → how far to clear it
-        const halfDepth=0.5*(Math.abs(nx)*(c.maxX-c.minX)+Math.abs(nz)*(c.maxZ-c.minZ));
-        const span=halfDepth*2;
         const type = c.top<=VAULT_MAX ? 'vault' : 'climb';
-        // landing: just past the far edge for a vault; on top / just over for a climb
-        const cxC=(c.minX+c.maxX)/2, czC=(c.minZ+c.maxZ)/2;
-        const overshoot = span + radius + 0.7;
-        const lx = cxC + nx*overshoot*0.5, lz = czC + nz*overshoot*0.5;
-        // require a clear landing and that we're actually moving INTO the face
-        if(!spotClear(lx,lz,radius*0.8)) continue;
-        return { type, land:{x:lx,z:lz}, top:c.top, rise:c.top,
+        // LANDING — march STRAIGHT along the player's facing from their OWN position
+        // (NOT from the box centre, which is what caused the sideways teleport on
+        // wide/angled obstacles). The path is a straight forward slide; we want to
+        // land just past the obstacle's far face with a body radius of clearance.
+        // distance from the player to the obstacle's far face along the heading:
+        const distToFar = Math.abs(nx)*((nx>=0?c.maxX:c.minX)-pos.x)
+                        + Math.abs(nz)*((nz>=0?c.maxZ:c.minZ)-pos.z);
+        // start a full body radius PAST the far face so the first probe is already
+        // clear of the obstacle we're vaulting (its own collider won't fail spotClear).
+        const minTravel = Math.max(0.6, distToFar + radius);
+        const maxTravel = distToFar + radius + 1.2;                // don't fling miles past it
+        // CLAMP the landing so it never overshoots into another wall: walk outward in
+        // small steps and keep the LAST clear spot; stop as soon as a wall appears
+        // after we've found a clear one (so we settle right beyond the obstacle).
+        let best=null;
+        for(let t=minTravel; t<=maxTravel; t+=0.25){
+          const tx=pos.x+nx*t, tz=pos.z+nz*t;
+          if(spotClear(tx,tz,radius*0.85)){ best={x:tx,z:tz}; }
+          else if(best) break;     // hit a wall past a clear spot → stop at the clear one
+        }
+        if(!best) continue;        // nowhere clear on the far side → not surmountable here
+        return { type, land:{x:best.x,z:best.z}, top:c.top, rise:c.top,
                  dur: type==='climb'?0.55:0.4 };
       }
     }
@@ -598,6 +610,6 @@ export const World = (function(){
     if(extractPos){ extractMesh.rotation.y+=dt; const d=Math.hypot(p.x-extractPos.x,p.z-extractPos.z);
       if(d<3 && Objectives.canExtract() && Input.keys[Input.code('interact')]){ extractHold+=dt; if(extractHold>=2) Raid.openExtractChoice(); } else extractHold=0; }
   }
-  return { reset, buildHub, buildRaid, moveActor, vaultProbe, interact, interactAny, update, addInteract:(o)=>interactables.push(o),
+  return { reset, buildHub, buildRaid, moveActor, vaultProbe, spotClear, interact, interactAny, update, addInteract:(o)=>interactables.push(o),
            mapInfo:()=>({boxes:mapBoxes, extract:extractPos?{x:extractPos.x,z:extractPos.z}:null, size:74}), get solids(){return solids;} };
 })();

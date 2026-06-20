@@ -832,20 +832,24 @@ export const UI = (function(){
   function renderSettings(){
     const s=S.profile.settings, b=s.binds;
     const kb=Object.keys(DATA.bindLabels).map(a=>`<div class="kbind"><span>${DATA.bindLabels[a]}</span><span class="key" data-bind="${a}">${keyName(b[a])}</span></div>`).join('');
-    $('settingsCard').innerHTML=`<div class="eb">System // Settings</div><h1>Settings</h1>
+    $('settingsCard').innerHTML=`<div class="shophead" style="align-items:center">
+        <div><div class="eb">System // Settings</div><h1 style="margin:0">Settings</h1></div>
+        <span class="btn" id="setClose" style="width:auto;margin:0;display:inline-block"><span class="k">ESC</span> Close</span>
+      </div>
       <div class="set"><span class="sl">Mouse sensitivity</span><span><input type="range" id="setSens" min="0.3" max="2.5" step="0.05" value="${s.sens}"> <span class="sv" id="setSensV">${s.sens.toFixed(2)}×</span></span></div>
       <div class="set"><span class="sl">Field of view</span><span><input type="range" id="setFov" min="60" max="100" step="1" value="${s.fov}"> <span class="sv" id="setFovV">${s.fov}°</span></span></div>
       <div class="set"><span class="sl">Invert Y axis</span><span class="btn" id="setInv" style="width:auto;margin:0;padding:6px 14px">${s.invertY?'ON':'OFF'}</span></div>
+      <div class="set"><span class="sl">Infinite ammo</span><span class="btn" id="setInfAmmo" style="width:auto;margin:0;padding:6px 14px">${s.infiniteAmmo?'ON':'OFF'}</span></div>
       <div class="colT" style="margin-top:16px"><span>Keybinds</span><span class="cap">click a key, then press</span></div>${kb}
       <div class="set"><span class="sl">Mouse <b style="color:var(--amber)">L</b> Fire · <b style="color:var(--amber)">R</b> ADS</span><span></span></div>
       <div style="margin-top:12px">
         <span class="btn" id="setReset" style="width:auto;display:inline-block;margin:0"><span class="k">↺</span> Reset binds</span>
-        <span class="btn" id="setClose" style="width:auto;display:inline-block;margin:0 0 0 8px"><span class="k">ESC</span> Close</span>
       </div>`;
     const sens=$('setSens'), fov=$('setFov');
     sens.oninput=()=>{ s.sens=parseFloat(sens.value); $('setSensV').textContent=s.sens.toFixed(2)+'×'; Save.save(); };
     fov.oninput=()=>{ s.fov=parseInt(fov.value); $('setFovV').textContent=s.fov+'°'; Input.applySettings(); Save.save(); };
     $('setInv').onclick=()=>{ s.invertY=!s.invertY; Save.save(); renderSettings(); };
+    $('setInfAmmo').onclick=()=>{ s.infiniteAmmo=!s.infiniteAmmo; Save.save(); renderSettings(); refreshHUD(); };
     $('setReset').onclick=()=>{ s.binds=Object.assign({},DATA.binds); Save.save(); renderSettings(); };
     $('setClose').onclick=closeMenus;
     $('settingsCard').querySelectorAll('[data-bind]').forEach(el=>{ el.onclick=()=>{ el.classList.add('bind'); el.textContent='press…';
@@ -906,16 +910,24 @@ export const UI = (function(){
         <span style="color:var(--dim)">${rep.next?`${rep.toNext}c to ${rep.next}`:'Max standing'}</span></div>
       <div style="height:6px;border-radius:4px;background:#0c0f12;border:1px solid var(--line);margin-top:5px;overflow:hidden;">
         <div style="height:100%;width:${Math.round(rep.progress*100)}%;background:linear-gradient(90deg,var(--amber-d),var(--amber));"></div></div></div>`;
-    $('vendorCard').innerHTML=`<div class="eb">Black Market // Trader</div>
-      <div class="shophead"><h1 style="margin:0">Trade</h1><div class="creditpill">💰 ${cr}c</div></div>
-      ${repBar}
+    // Fixed-height window: Close pinned at the TOP (cross-project convention — never
+    // bottom-of-scroll), header/rep/tabs fixed, and ONLY the item list scrolls.
+    $('vendorCard').innerHTML=`<div class="shopwin">
+      <div class="shophead" style="align-items:center">
+        <div><div class="eb">Black Market // Trader</div><h1 style="margin:0">Trade</h1></div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div class="creditpill">💰 ${cr}c</div>
+          <div class="btn" id="vClose" style="width:auto;margin:0;display:inline-block"><span class="k">ESC</span> Close</div>
+        </div>
+      </div>
+      <div class="repwrap">${repBar}</div>
       <div class="tabs">
         <button class="tab ${vendorTab==='buy'?'on':''}" data-tab="buy">Buy</button>
         <button class="tab ${vendorTab==='sell'?'on':''}" data-tab="sell">Sell</button>
         <button class="tab ${vendorTab==='buyback'?'on':''}" data-tab="buyback">Buy-back</button>
       </div>
-      ${body}
-      <div class="btn" id="vClose" style="margin-top:16px;width:auto;display:inline-block"><span class="k">ESC</span> Close</div>`;
+      <div class="shopscroll">${body}</div>
+    </div>`;
     $('vClose').onclick=closeVendor;
     $('vendorCard').querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ vendorTab=b.dataset.tab; renderVendor(); });
     $('vendorCard').querySelectorAll('[data-buy]').forEach(b=>b.onclick=()=>{ Vendor.buy(b.dataset.buy); Audio.play('ui'); renderVendor(); refreshHUD(); });

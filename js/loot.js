@@ -40,7 +40,10 @@ export const Loot = (function(){
   }
   function grab(pk,inter){
     if(pk.consumed) return;
-    if(pk.item.def.type==='valuable' && S.run){ const v=pk.item.def.value*pk.item.qty; S.run.bagValue+=v; UI.toast(`${pk.item.def.name} +${v}c`,'pos'); }
+    // currency-like valuables (def.bank: cash/coins) convert straight to bag value;
+    // every other valuable is CARRIED loot — it goes into the bag so you can extract
+    // it and SELL it at the vendor (same intake path as any other item).
+    if(pk.item.def.type==='valuable' && pk.item.def.bank && S.run){ const v=pk.item.def.value*pk.item.qty; S.run.bagValue+=v; UI.toast(`${pk.item.def.name} +${v}c`,'pos'); }
     else { if(!Inventory.addLoot(pk.item)){ UI.toast('No room','neg'); return; } UI.toast(`${pk.item.def.name}${pk.item.qty>1?' ×'+pk.item.qty:''}`, pk.item.def.rarity>=3?'rare':'neu'); }
     pk.consumed=true; inter.consumed=true; GFX.world.remove(pk.mesh); Audio.play('pickup');
   }

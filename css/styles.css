@@ -142,6 +142,12 @@
   .tabs{display:flex;gap:6px;margin:12px 0 14px;border-bottom:1px solid var(--line);}
   .tab{background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:var(--mono);font-size:13px;letter-spacing:1px;text-transform:uppercase;padding:8px 16px;cursor:pointer;}
   .tab.on{color:var(--amber);border-bottom-color:var(--amber);}
+  /* VENDOR WINDOW: a stable fixed-height shell. Header + tabs + Close stay PINNED at
+     the top; only the item list scrolls inside .shopscroll. So a long Buy/Sell list
+     never grows the window or pushes the Close button off-screen. */
+  .shopwin{display:flex;flex-direction:column;height:78vh;max-height:78vh;min-height:0;}
+  .shopwin .shophead, .shopwin .tabs, .shopwin #vendorClose, .shopwin .repwrap{flex:0 0 auto;}
+  .shopscroll{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:6px;margin-top:8px;}
   .shopgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(124px,1fr));gap:10px;}
   .shopcard{position:relative;border:1px solid var(--line);border-radius:8px;background:linear-gradient(160deg,#11171c,#0b0e12);padding:14px 10px 10px;display:flex;flex-direction:column;align-items:center;text-align:center;transition:transform .07s,border-color .1s,box-shadow .1s;}
   .shopcard:hover{transform:translateY(-2px);border-color:var(--amber);box-shadow:0 6px 18px rgba(0,0,0,.5);}
