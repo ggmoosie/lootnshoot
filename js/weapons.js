@@ -26,26 +26,121 @@ export const Weapons = (function(){
   // the installed optic's reticle housing, or the built-in iron sight. ADS aligns
   // THIS point to screen centre so you look through the optic, not the off-bore body.
   let sightLocal=new T.Vector3(.22,-.08,-.55);
-  let prevFire=false, burstLeft=0, recoilDebt=0, bobT=0, swayX=0, swayY=0, lastYaw=0, lastPitch=0;
+  let prevFire=false, burstLeft=0, recoilDebt=0, bobT=0, bobX=0, bobY=0, swayX=0, swayY=0, lastYaw=0, lastPitch=0;
   // ---- holster / draw state (feat/lns-weapons) ----
   // Weapons SPAWN HOLSTERED. `holstered` gates fire/ADS and drops the viewmodel
   // to a lowered carry pose. `drawAnim`/`holsterAnim`/`swapAnim` are 0..1 timers
   // that drive the equip / unequip / swap viewmodel animation PLACEHOLDERS in
   // update() (visual stubs/hooks — real animation art can replace the math later).
   let holstered=true, drawAnim=0, holsterAnim=0, swapAnim=0, reticleEl=null;
+  // ---- LASER toggle + continuous beam (feat/weapon-camera-feel) ----------------
+  // laserOn = player intent (toggled by the bound key). The beam only RENDERS when
+  // the gun also has a laser attachment installed (st.laser). `laserBeam` is a thin
+  // emissive cylinder reused frame-to-frame (oriented/scaled, never re-created) that
+  // runs muzzle→hit-point; `laserDot` (built below) caps the hit end.
+  let laserOn=true, laserBeam=null;
+  // ---- SCOPE overlay (feat/weapon-camera-feel) ---------------------------------
+  // A screen-space black-vignette circle shown only while ADS through a MAGNIFYING
+  // (crosshair-reticle) optic — the round "scope view" the zoomed image sits inside.
+  // Built once on demand, like the reticle. Distinct from red-dot/holo (no overlay).
+  let scopeEl=null;
+
+  // shared soft-glow sprite texture: a radial-gradient dot baked once into a canvas
+  // and reused for every emissive glow (red-dot/holo center, laser hit dot). Gives a
+  // translucent halo'd glow instead of a hard-edged solid mesh. Cached module-wide.
+  let _glowTex=null;
+  function glowTexture(){
+    if(_glowTex) return _glowTex;
+    const c=document.createElement('canvas'); c.width=c.height=64; const x=c.getContext('2d');
+    const g=x.createRadialGradient(32,32,0,32,32,32);
+    g.addColorStop(0,'rgba(255,255,255,1)'); g.addColorStop(0.35,'rgba(255,255,255,0.55)');
+    g.addColorStop(0.7,'rgba(255,255,255,0.12)'); g.addColorStop(1,'rgba(255,255,255,0)');
+    x.fillStyle=g; x.beginPath(); x.arc(32,32,32,0,Math.PI*2); x.fill();
+    _glowTex=new T.CanvasTexture(c); return _glowTex;
+  }
 
   function modeOf(it){ const modes=DATA.weapons[it.def.weapon].modes||['auto']; if(!it.inst.mode||!modes.includes(it.inst.mode)) it.inst.mode=modes[0]; return it.inst.mode; }
   function cycleMode(){ const it=activeItem(); if(!it) return; const modes=DATA.weapons[it.def.weapon].modes||['auto']; if(modes.length<2){ UI.toast(modes[0].toUpperCase()+' only','neu'); return; }
     const i=modes.indexOf(modeOf(it)); it.inst.mode=modes[(i+1)%modes.length]; Audio.play('ui'); UI.toast('Fire mode: '+it.inst.mode.toUpperCase(),'neu'); Events.emit('weapon:changed'); }
   function spawnTracer(a,b){ fxTracer(a,b,0xffd27a); }
 
+  // shared viewmodel materials (one each, reused by every per-class body — no
+  // per-build allocation). Steel = receiver/slide, dark = barrel/grip/furniture.
+  const VM_STEEL=new T.MeshStandardMaterial({color:0x1c1f22,roughness:.6,metalness:.4});
+  const VM_DARK =new T.MeshStandardMaterial({color:0x14171a,roughness:.5,metalness:.55});
+  // the per-class BODY meshes live in their own group so refreshAttachments can swap
+  // the silhouette when the held weapon class changes (the camera-attached `gun`
+  // group, iron sights, muzzle, attachGroup + laserDot are built ONCE and kept).
+  let bodyGroup=null, lastBodyClass='';
+  // ---- PER-CLASS VIEWMODELS (feat/weapon-camera-feel) --------------------------
+  // Procedurally builds a DISTINCT first-person silhouette per weapon class so a
+  // pistol, SMG, rifle, shotgun and sniper don't all share one box. Same screen
+  // anchor (.22 right, lowered, bore at z≈-.55) so ADS/iron-sight alignment +
+  // sightLocal math are untouched — only the body shape varies. Box-built to match
+  // the existing low-poly look; geometry is fresh per swap but bounded + disposed.
+  function classFor(wk){
+    // collapse the weapon zoo into 5 visual archetypes
+    if(wk==='pistol'||wk==='machpistol') return 'pistol';
+    if(wk==='smg'||wk==='mp5') return 'smg';
+    if(wk==='shotgun') return 'shotgun';
+    if(wk==='dmr'||wk==='bolt') return 'sniper';
+    return 'rifle';  // carbine / ak / bullpup / lmg + any unknown
+  }
+  function mesh(geo, mat, x,y,z, rx,ry,rz){ const m=new T.Mesh(geo, mat||VM_DARK); m.position.set(x,y,z); if(rx)m.rotation.x=rx; if(ry)m.rotation.y=ry; if(rz)m.rotation.z=rz; return m; }
+  function buildBody(cls){
+    const grp=new T.Group(); const X=.22;
+    const add=(...m)=>grp.add(...m);
+    if(cls==='pistol'){
+      // compact slide + short barrel + steep grip; sits a touch higher/closer
+      add(mesh(new T.BoxGeometry(.07,.085,.26), VM_STEEL, X,-.165,-.5));
+      add(mesh(new T.BoxGeometry(.045,.05,.16), VM_DARK,  X,-.155,-.66));   // short barrel shroud
+      add(mesh(new T.BoxGeometry(.06,.15,.07),  VM_DARK,  X,-.27,-.46, -.32)); // angled grip
+    } else if(cls==='smg'){
+      // small boxy receiver, stubby barrel, vertical-ish grip + a hint of a stock
+      add(mesh(new T.BoxGeometry(.075,.11,.34), VM_STEEL, X,-.175,-.5));
+      add(mesh(new T.BoxGeometry(.04,.05,.24),  VM_DARK,  X,-.165,-.78));
+      add(mesh(new T.BoxGeometry(.065,.155,.075),VM_DARK, X,-.275,-.43, -.18));
+      add(mesh(new T.BoxGeometry(.05,.06,.14),  VM_DARK,  X,-.165,-.34));   // collapsed stub stock
+    } else if(cls==='shotgun'){
+      // chunky receiver, fat barrel + a pump under the barrel, full stock
+      add(mesh(new T.BoxGeometry(.085,.1,.46),  VM_STEEL, X,-.175,-.55));
+      add(mesh(new T.CylinderGeometry(.03,.03,.5,10), VM_DARK, X,-.15,-.86, Math.PI/2));      // wide barrel
+      add(mesh(new T.BoxGeometry(.045,.05,.16), VM_DARK,  X,-.225,-.78));   // pump fore-end
+      add(mesh(new T.BoxGeometry(.06,.16,.08),  VM_DARK,  X,-.28,-.44, -.22));
+      add(mesh(new T.BoxGeometry(.055,.085,.24),VM_DARK,  X,-.185,-.26));   // full stock
+    } else if(cls==='sniper'){
+      // long thin receiver, very long barrel, prominent cheek-riser stock
+      add(mesh(new T.BoxGeometry(.07,.11,.6),   VM_STEEL, X,-.17,-.6));
+      add(mesh(new T.CylinderGeometry(.018,.018,.6,10), VM_DARK, X,-.155,-1.06, Math.PI/2)); // long barrel
+      add(mesh(new T.BoxGeometry(.06,.165,.075),VM_DARK,  X,-.28,-.46, -.12));
+      add(mesh(new T.BoxGeometry(.06,.12,.3),   VM_DARK,  X,-.2,-.2));       // long stock w/ riser
+      add(mesh(new T.BoxGeometry(.05,.04,.14),  VM_DARK,  X,-.115,-.22));    // cheek riser
+    } else { // rifle
+      // mid receiver + handguard + barrel + carry-handle-ish top + standard grip/stock
+      add(mesh(new T.BoxGeometry(.085,.12,.5),  VM_STEEL, X,-.18,-.55));
+      add(mesh(new T.BoxGeometry(.05,.06,.34),  VM_DARK,  X,-.17,-.85));     // handguard/barrel bar
+      add(mesh(new T.BoxGeometry(.07,.16,.08),  VM_DARK,  X,-.28,-.42, -.1));// grip
+      add(mesh(new T.BoxGeometry(.055,.09,.2),  VM_DARK,  X,-.185,-.24));    // stock
+    }
+    return grp;
+  }
+  function refreshBody(it){
+    const cls = it ? classFor(it.def.weapon) : '';
+    if(cls===lastBodyClass) return; lastBodyClass=cls;
+    if(bodyGroup){ // dispose the old silhouette's geometry (materials are shared)
+      gun.remove(bodyGroup);
+      bodyGroup.traverse(o=>{ if(o.geometry){ try{o.geometry.dispose();}catch(e){} } });
+      bodyGroup=null;
+    }
+    if(!cls) return;
+    bodyGroup=buildBody(cls); gun.add(bodyGroup);
+  }
+
   function buildViewmodel(){
     const g=new T.Group();
-    const m=new T.MeshStandardMaterial({color:0x1c1f22,roughness:.6,metalness:.4});
-    const body=new T.Mesh(new T.BoxGeometry(.09,.12,.5),m); body.position.set(.22,-.18,-.55);
-    const bar=new T.Mesh(new T.BoxGeometry(.05,.06,.34),m); bar.position.set(.22,-.17,-.85);
-    const grip=new T.Mesh(new T.BoxGeometry(.07,.16,.08),m); grip.position.set(.22,-.28,-.42);
-    g.add(body,bar,grip);
+    // body silhouette is built per-class on first refresh (refreshBody); the group
+    // is created empty here and populated once a weapon is active.
+    gun=g;
     // ---- built-in IRON SIGHTS (front post + rear notch on top of the receiver) ----
     // A small group sitting just above the bore. Shown by default; HIDDEN whenever an
     // optic is installed (refreshAttachments toggles it). ADS aligns the FRONT POST
@@ -67,18 +162,26 @@ export const Weapons = (function(){
     // put-away on spawn / in the safehouse before the first draw. update() drives
     // the pose once in a raid; this seeds the resting holstered look beforehand.
     g.position.set(0,-0.5,0.22); g.rotation.x=1.1;
-    // laser dot: a small red sprite that lives in the WORLD (added to the scene,
-    // not the camera) so it lands on whatever the muzzle points at. Hidden until
-    // a LASER attachment is installed; positioned each frame in update().
-    const lm=new T.SpriteMaterial({color:0xff3b30,transparent:true,opacity:0,depthTest:false});
+    // laser dot: a soft GLOWING sprite that lives in the WORLD (added to the scene,
+    // not the camera) so it lands on whatever the muzzle points at. Hidden until a
+    // LASER attachment is installed AND the laser is toggled on; placed each frame.
+    const lm=new T.SpriteMaterial({map:glowTexture(),color:0xff3b30,transparent:true,opacity:0,blending:T.AdditiveBlending,depthTest:false,depthWrite:false});
     laserDot=new T.Sprite(lm); laserDot.scale.set(.08,.08,.08); laserDot.visible=false;
     (GFX.scene||GFX.camera.parent||GFX.camera).add(laserDot);
+    // CONSTANT laser BEAM: a unit-length emissive cylinder (1 unit tall along its
+    // local +Y) reused every frame — update() points/scales it from muzzle→hit so
+    // there's no per-frame geometry churn. Lives in the world like the dot.
+    laserBeam=new T.Mesh(new T.CylinderGeometry(.006,.006,1,6),
+      new T.MeshBasicMaterial({color:0xff3b30,transparent:true,opacity:.5,blending:T.AdditiveBlending,depthWrite:false}));
+    laserBeam.visible=false;
+    (GFX.scene||GFX.camera.parent||GFX.camera).add(laserBeam);
   }
   // rebuild visible attachment meshes from the active weapon's installed mods
   function refreshAttachments(){
     if(!attachGroup || !S.profile) return; const it=activeItem();
     const sig = it ? S.player.activeSlot+'|'+Object.entries(it.inst.attachments||{}).map(a=>a.join(':')).sort().join(',') : '';
     if(sig===lastAttachSig) return; lastAttachSig=sig;
+    refreshBody(it);   // swap the per-class body silhouette if the weapon class changed
     while(attachGroup.children.length) attachGroup.remove(attachGroup.children[0]);
     if(!it){ if(ironSight) ironSight.visible=true; sightLocal.set(.22,-.095,-.5); return; }
     const att=it.inst.attachments||{}; const dark=new T.MeshStandardMaterial({color:0x101316,roughness:.5,metalness:.6});
@@ -93,12 +196,22 @@ export const Weapons = (function(){
         const lens=new T.Mesh(new T.CylinderGeometry(.045,.045,.04,12), new T.MeshStandardMaterial({color:0x224455,emissive:0x113344,emissiveIntensity:.6})); lens.rotation.x=Math.PI/2; lens.position.set(.22,-.08,-.5); attachGroup.add(lens);
         sightLocal.set(.22,-.08,-.5);   // aim through the scope lens centre
       } else {
-        // RED-DOT / HOLO: a hollow RING housing (TorusGeometry, NOT a solid disc)
-        // with a small glowing DOT floating at its center — a functional reticle.
+        // RED-DOT / HOLO: a SLEEK low-profile optic — a thin open ring frame on a
+        // slim base, with a soft GLOWING TRANSLUCENT center dot (an additive glow
+        // sprite, not a solid opaque sphere). Reads as a real holosight, not a brick.
         const eff=DATA.attachments[att.optic]; const dot=parseInt((eff&&eff.reticleColor||'#ff3b30').slice(1),16)||0xff3b30;
-        const ring=new T.Mesh(new T.TorusGeometry(.032,.008,8,16), dark); ring.position.set(.22,-.08,-.55); attachGroup.add(ring);
-        const glow=new T.Mesh(new T.SphereGeometry(.008,8,8), new T.MeshStandardMaterial({color:dot,emissive:dot,emissiveIntensity:1.4})); glow.position.set(.22,-.08,-.55); attachGroup.add(glow);
-        sightLocal.set(.22,-.08,-.55);  // aim through the red-dot/holo reticle centre
+        const holo = (eff&&eff.name||att.optic||'').toString().toLowerCase().includes('holo') || att.optic==='att_holo';
+        // thinner torus tube (.008 → .004) + more segments = a sleeker, rounder ring
+        const ring=new T.Mesh(new T.TorusGeometry(holo?.034:.028,.004,10,24), dark); ring.position.set(.22,-.075,-.55); attachGroup.add(ring);
+        // a slim mounting base under the ring so it doesn't float (low-profile, not blocky)
+        const base=new T.Mesh(new T.BoxGeometry(.022,.02,.05), dark); base.position.set(.22,-.10,-.55); attachGroup.add(base);
+        // glowing translucent center dot: additive sprite with the reticle tint + a
+        // subtle wider halo behind it. Soft-edged + see-through, never depth-tested.
+        const dotMat=new T.SpriteMaterial({map:glowTexture(),color:dot,transparent:true,opacity:.95,blending:T.AdditiveBlending,depthTest:false,depthWrite:false});
+        const dotSp=new T.Sprite(dotMat); dotSp.scale.set(.012,.012,.012); dotSp.position.set(.22,-.075,-.552); attachGroup.add(dotSp);
+        const haloMat=new T.SpriteMaterial({map:glowTexture(),color:dot,transparent:true,opacity:.28,blending:T.AdditiveBlending,depthTest:false,depthWrite:false});
+        const halo=new T.Sprite(haloMat); halo.scale.set(.03,.03,.03); halo.position.set(.22,-.075,-.553); attachGroup.add(halo);
+        sightLocal.set(.22,-.075,-.55);  // aim through the red-dot/holo reticle centre
       }
     }
     if(att.muzzle){ const sup=att.muzzle==='att_suppressor'; const dev=new T.Mesh(new T.CylinderGeometry(sup?.04:.05,sup?.04:.05,sup?.2:.1,10), dark); dev.rotation.x=Math.PI/2; dev.position.set(.22,-.17,sup?-1.0:-.95); attachGroup.add(dev); }
@@ -170,16 +283,16 @@ export const Weapons = (function(){
           new T.MeshStandardMaterial({color:0x224455, emissive:0x113344, emissiveIntensity:.7, side:T.DoubleSide}));
         lens.rotation.y = -Math.PI/2; lens.position.set(-0.11, 0.17, 0); g.add(lens);
       } else {
-        // RED-DOT / HOLO in the gunsmith preview: a hollow RING (torus) + a glowing
-        // center DOT — matches the in-game reticle (not a flat opaque disc).
+        // RED-DOT / HOLO in the gunsmith preview: a SLIM ring frame + a soft glowing
+        // translucent center dot (additive sprite) — matches the sleeker in-game optic.
         const eff=DATA.attachments[att.optic]; const dot=parseInt((eff&&eff.reticleColor||'#ff3b30').slice(1),16)||0xff3b30;
-        const optic = new T.Mesh(new T.CylinderGeometry(0.03, 0.03, 0.08, 14), attMat(att.optic));
+        const optic = new T.Mesh(new T.CylinderGeometry(0.024, 0.024, 0.06, 16), attMat(att.optic));
         optic.rotation.z = Math.PI/2; optic.position.set(0.0, 0.17, 0); g.add(optic);
-        const ring = new T.Mesh(new T.TorusGeometry(0.026, 0.006, 8, 18), dark());
+        const ring = new T.Mesh(new T.TorusGeometry(0.024, 0.004, 10, 22), dark());
         ring.rotation.y = -Math.PI/2; ring.position.set(-0.04, 0.17, 0); g.add(ring);
-        const glow = new T.Mesh(new T.SphereGeometry(0.007, 8, 8),
-          new T.MeshStandardMaterial({color:dot, emissive:dot, emissiveIntensity:1.5}));
-        glow.position.set(-0.04, 0.17, 0); g.add(glow);
+        const glow = new T.Sprite(new T.SpriteMaterial({map:glowTexture(), color:dot,
+          transparent:true, opacity:.95, blending:T.AdditiveBlending, depthTest:false, depthWrite:false}));
+        glow.scale.set(0.02,0.02,0.02); glow.position.set(-0.045, 0.17, 0); g.add(glow);
       }
     }
     if(att.barrel){ // longer/shorter barrel sleeve over the muzzle end
@@ -284,6 +397,49 @@ export const Weapons = (function(){
     const eff=opticId?DATA.attachments[opticId]:null;
     if(eff&&eff.reticle) return { reticle:eff.reticle, color:eff.reticleColor||'#cfe8ff', aimDot:true, optic:opticId };
     return DATA.ironSight;   // no optic -> iron sights
+  }
+  // is the active optic a MAGNIFYING scope? Scopes carry reticle:'crosshair' (4x /
+  // LPVO / thermal / bolt scope). Red-dot + holo (reticle:'reddot') are NOT scopes —
+  // they keep their tiny existing zoom and get no magnified scope overlay. This is
+  // the single source of truth for "should we zoom + draw the round scope view".
+  function isScope(it){ it=it||activeItem(); if(!it) return false;
+    const opticId=(it.inst.attachments||{}).optic; const eff=opticId?DATA.attachments[opticId]:null;
+    return !!(eff && eff.reticle==='crosshair'); }
+
+  // ---- LASER toggle API (feat/weapon-camera-feel) -----------------------------
+  // The bound key flips laserOn. The beam still only RENDERS when a laser
+  // attachment is installed (st.laser) — toggling with no laser just confirms the
+  // state. Toast tells the player what happened so the key never feels dead.
+  function hasLaser(){ const st=stats(); return !!(st&&st.laser); }
+  function setLaser(on){ laserOn=!!on; }
+  function toggleLaser(){
+    laserOn=!laserOn; Audio.play('ui');
+    if(hasLaser()) UI.toast('Laser '+(laserOn?'ON':'OFF'),'neu');
+    else UI.toast('No laser attachment','neu');
+  }
+  function isLaserOn(){ return laserOn; }
+
+  // ---- SCOPE VIEW overlay (feat/weapon-camera-feel) ---------------------------
+  // A round scoped-view vignette: a big black ring that masks the screen corners to
+  // a circle while ADS through a magnifying optic, so the (FOV-narrowed) view reads
+  // as "what's inside the scope". A thin cross hair + center pip ride on top via the
+  // existing reticle. Built once; only opacity toggles per frame (cheap).
+  function ensureScope(){
+    if(scopeEl) return scopeEl;
+    const hud=document.getElementById('hud')||document.body;
+    const el=document.createElement('div'); el.id='scopeOverlay';
+    // radial mask: transparent center circle, hard black outside it; a faint inner
+    // ring line + corner darkening sell the optic. Sized in vmin so it scales.
+    el.style.cssText='position:absolute;inset:0;pointer-events:none;z-index:10;opacity:0;'
+      +'transition:opacity .12s linear;will-change:opacity;'
+      +'background:radial-gradient(circle at 50% 50%,'
+      +'transparent 0 28vmin, rgba(0,0,0,.55) 28.4vmin 30vmin, #000 30.4vmin 200vmin);';
+    // a thin scope-ring highlight just inside the black edge
+    const ring=document.createElement('i');
+    ring.style.cssText='position:absolute;left:50%;top:50%;width:56vmin;height:56vmin;'
+      +'transform:translate(-50%,-50%);border-radius:50%;border:1px solid rgba(180,210,230,.18);'
+      +'box-shadow:0 0 24px rgba(0,0,0,.6) inset;';
+    el.appendChild(ring); hud.appendChild(el); scopeEl=el; return el;
   }
 
   // ---- ADS RETICLE OVERLAY (iron sights + red-dot + scope crosshair) ----------
@@ -484,6 +640,8 @@ export const Weapons = (function(){
     const kick=st.recoil*(at.recoil||1)*(S.player.ads?0.55:1);
     GFX.pitch.rotation.x=clamp(GFX.pitch.rotation.x+kick,-1.5,1.5); recoilDebt+=kick;
     GFX.yaw.rotation.y += (Math.random()-0.5)*kick*0.5;
+    // subtle muzzle camera-shake scaled to the gun's recoil (damped while scoped).
+    GFX.shake(clamp(kick*4.2, 0.04, 0.4)*(S.player.ads?0.5:1));
     // spread
     const spread = S.player.ads?st.adsSpread:st.spread;
     const dir=new T.Vector3(); GFX.camera.getWorldDirection(dir);
@@ -590,12 +748,12 @@ export const Weapons = (function(){
     // SAFEZONE / out-of-field: NO held gun. The viewmodel only shows in a raid so the
     // safehouse view is clear (no weapon blocking the screen while you gear up/trade).
     if(gun) gun.visible = (S.mode===MODE.RAID);
-    if(laserDot && S.mode!==MODE.RAID) laserDot.visible=false;
+    if(S.mode!==MODE.RAID){ if(laserDot) laserDot.visible=false; if(laserBeam) laserBeam.visible=false; }
     if(muzzle && muzzle.material.opacity>0) muzzle.material.opacity=Math.max(0,muzzle.material.opacity-dt*12);
     if(reloading && Clock.now>=reloadEnd) finishReload();
     // recoil recovery: spring the kicked aim back down
     if(recoilDebt>0.0001){ const rec=recoilDebt*Math.min(1,dt*7); GFX.pitch.rotation.x=clamp(GFX.pitch.rotation.x-rec,-1.5,1.5); recoilDebt-=rec; } else recoilDebt=0;
-    if(S.mode!==MODE.RAID){ prevFire=false; burstLeft=0; if(reticleEl) reticleEl.style.opacity='0'; return; }
+    if(S.mode!==MODE.RAID){ prevFire=false; burstLeft=0; GFX.setBob(0,0); if(reticleEl) reticleEl.style.opacity='0'; if(scopeEl) scopeEl.style.opacity='0'; return; }
     // decay the equip / unequip / swap animation PLACEHOLDER timers
     if(drawAnim>0)    drawAnim    = Math.max(0, drawAnim    - dt*3.2);
     if(holsterAnim>0) holsterAnim = Math.max(0, holsterAnim - dt*3.6);
@@ -654,9 +812,20 @@ export const Weapons = (function(){
       const k=Math.min(1,dt*(ads?16:9)*handling);
       gun.position.x += (tx-gun.position.x)*k; gun.position.y += (ty-gun.position.y)*k; gun.position.z += (tz-gun.position.z)*k;
       gun.rotation.x += (trx-gun.rotation.x)*Math.min(1,dt*12);
-      const hb=moving?1:0;
-      GFX.camera.position.x += (Math.sin(bobT*0.5)*0.014*hb - GFX.camera.position.x)*Math.min(1,dt*8);
-      GFX.camera.position.y += (Math.abs(Math.sin(bobT))*0.02*hb - GFX.camera.position.y)*Math.min(1,dt*8);
+      // ---- HEADBOB (feat/weapon-camera-feel) ----
+      // Subtle walk/run sway, routed through GFX.setBob so it composites at render
+      // (toggleable + prefers-reduced-motion aware) instead of mutating the camera
+      // rig directly. Amount eases up while moving, settles to 0 at rest; the run
+      // sprint pushes it a touch harder. camera.position itself stays at baseline 0
+      // so ADS sightLocal alignment is never thrown off by a leftover offset.
+      const sprinting = !!(Input.down && Input.down('sprint') && !Input.crouch);
+      const hb = moving?(sprinting?1.15:1):0;
+      bobX += (Math.sin(bobT*0.5)*0.012*hb - bobX)*Math.min(1,dt*8);
+      bobY += (Math.abs(Math.sin(bobT))*0.018*hb - bobY)*Math.min(1,dt*8);
+      // ADS damps the bob hard so aiming stays steady
+      const bm = ads?0.25:1;
+      GFX.setBob(bobX*bm, bobY*bm);
+      GFX.camera.position.set(0,0,0);   // keep the rig baseline clean (bob is composited)
     }
     // effective ADS: aiming AND drawn. Used for crosshair/reticle/fov below.
     const aiming = S.player.ads && !holstered;
@@ -670,24 +839,47 @@ export const Weapons = (function(){
     // center dot sits at screen center = the aim point the hitscan converges on.
     if(aiming && it){ const sight=sightOf(it); paintReticle(sight); const el=ensureReticle(); el.style.opacity='1'; }
     else if(reticleEl){ reticleEl.style.opacity='0'; }
-    // laser dot: project to the first solid the muzzle line hits (LASER mod only)
+    // ---- LASER: constant glowing beam + hit dot (LASER mod installed AND toggled
+    // on). The beam runs muzzle→first-hit and stays lit every frame (not just on
+    // fire). Beam + dot are reused meshes — only transform/opacity change here.
     if(laserDot){
-      const on = !!(st && st.laser);
-      laserDot.visible = on;
+      const on = !!(st && st.laser) && laserOn && S.mode===MODE.RAID && !holstered;
+      laserDot.visible = on; if(laserBeam) laserBeam.visible = on;
       if(on){
         const ld=new T.Vector3(); GFX.camera.getWorldDirection(ld);
         const lo=new T.Vector3(); GFX.camera.getWorldPosition(lo);
         ray.set(lo,ld); ray.far=120;
         const lh=ray.intersectObjects([...World.solids, ...Enemies.hitMeshes()],false); ray.far=Infinity;
         const pt = lh.length ? lh[0].point : lo.clone().addScaledVector(ld, 60);
+        // tint the beam to the laser device color (IR laser reads cyaner) if present
         laserDot.position.copy(pt);
         const d = lo.distanceTo(pt); laserDot.scale.setScalar(clamp(0.02+d*0.0016, 0.03, 0.3));
-        laserDot.material.opacity = S.player.ads?0.35:0.85;   // dimmer when scoped
+        laserDot.material.opacity = S.player.ads?0.5:0.95;   // a touch dimmer when scoped
+        // beam: originate at the muzzle (offset down the bore from the eye) so it
+        // reads as coming from the gun, not the face. Orient + scale the unit
+        // cylinder to span origin→hit without rebuilding geometry.
+        if(laserBeam){
+          const org=lo.clone().addScaledVector(ld,0.35); org.y-=0.06;
+          const seg=pt.clone().sub(org); const len=seg.length();
+          const mid=org.clone().addScaledVector(seg,0.5);
+          laserBeam.position.copy(mid);
+          laserBeam.scale.set(1, Math.max(0.001,len), 1);
+          // align the cylinder's +Y to the beam direction
+          laserBeam.quaternion.setFromUnitVectors(new T.Vector3(0,1,0), seg.normalize());
+          laserBeam.material.opacity = S.player.ads?0.28:0.5;
+        }
       }
     }
-    // ADS fov lerp — only zoom when actually aiming a DRAWN weapon
+    // ---- ZOOM SCOPE: a magnifying optic narrows the camera FOV (zooms the view)
+    // while ADS, and shows a round scope-view overlay. Red-dot/holo keep their tiny
+    // 1.1–1.4× zoom (no overlay). Scopes use their full st.zoom (2.2–3.6×). The
+    // baseFov/zoom division IS the magnification; restored to baseFov on release.
+    const scoped = aiming && isScope(it);
     const want = aiming ? GFX.baseFov/((st&&st.zoom)||1.3) : GFX.baseFov;
     GFX.camera.fov += (want-GFX.camera.fov)*Math.min(1,dt*12); GFX.camera.updateProjectionMatrix();
+    // scope-view overlay: show the round vignette only while scoped-in
+    if(scoped){ ensureScope().style.opacity='1'; }
+    else if(scopeEl){ scopeEl.style.opacity='0'; }
     // a holstered gun can't aim: drop the ADS intent so nothing downstream zooms.
     S.player.ads = Input.ads && !holstered;
   }
@@ -695,5 +887,7 @@ export const Weapons = (function(){
     // ammo-type / magazine-feed API (feat/lns-ammo-mags)
     loadedType, loadedTypeId, availableTypes, reserveOf, setAmmo, cycleAmmo,
     // holster/draw + sight API (fix/lns-weapons)
-    draw, holster, toggleHolster, isHolstered, sightOf };
+    draw, holster, toggleHolster, isHolstered, sightOf,
+    // laser toggle API (feat/weapon-camera-feel)
+    toggleLaser, setLaser, isLaserOn };
 })();
