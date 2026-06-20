@@ -65,7 +65,7 @@ _no top-level exports_
 
 ## js/minimap.js
 
-- `Minimap` (const) — js/minimap.js:11
+- `Minimap` (const) — js/minimap.js:18
 
 ## js/objectives.js
 
