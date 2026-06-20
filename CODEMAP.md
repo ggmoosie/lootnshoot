@@ -77,7 +77,7 @@ _no top-level exports_
 
 ## js/player.js
 
-- `Player` (const) — js/player.js:17
+- `Player` (const) — js/player.js:18
 
 ## js/preview.js
 
@@ -89,7 +89,7 @@ _no top-level exports_
 
 ## js/projectiles.js
 
-- `Projectiles` (const) — js/projectiles.js:10
+- `Projectiles` (const) — js/projectiles.js:26
 
 ## js/raid.js
 
@@ -110,7 +110,7 @@ _no top-level exports_
 
 ## js/status.js
 
-- `Status` (const) — js/status.js:6
+- `Status` (const) — js/status.js:13
 
 ## js/three.js
 
