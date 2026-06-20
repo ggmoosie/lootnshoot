@@ -30,7 +30,8 @@ export const S = {
 };
 
 // equipment slots (order = doll layout + serialization order)
-export const EQUIP_SLOTS = ['primary','secondary','helmet','armor','rig','backpack'];
+// (clothing = soft wearable layer; part of the armor/clothing gear system)
+export const EQUIP_SLOTS = ['primary','secondary','helmet','armor','clothing','rig','backpack'];
 
 // global frame clock — Clock.now is wall-time seconds, advanced by the main loop.
 export const Clock = { now:0 };
