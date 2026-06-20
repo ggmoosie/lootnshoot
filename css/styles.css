@@ -282,17 +282,20 @@
    *  Tokens keep every cluster aligned to the same insets/sizes.   *
    * ============================================================= */
   /* Touch HUD tokens live on :root so BOTH #touch controls and the repositioned
-     #hud furniture (credits/objective/compass/ammo/vitals) can read them. */
+     #hud furniture (credits/objective/compass/ammo/vitals) can read them.
+     --combat is the right-thumb cluster's footprint (fire + its action ring),
+     used to anchor the centred quick-bar and ammo so nothing ever overlaps. */
   :root{
     --sat:max(10px,env(safe-area-inset-top));
     --sar:max(12px,env(safe-area-inset-right));
     --sab:max(12px,env(safe-area-inset-bottom));
     --sal:max(12px,env(safe-area-inset-left));
-    --fire:clamp(76px,15vw,108px);   /* fire button diameter   */
-    --act:clamp(50px,9.5vw,66px);    /* secondary action btn   */
-    --joy:clamp(116px,30vw,168px);   /* joystick base diameter */
-    --tone:rgba(232,163,61,.5);      /* default amber edge      */
-    --glass:rgba(14,18,22,.42);      /* control glass fill      */
+    --fire:clamp(80px,15.5vw,110px);  /* fire button diameter      */
+    --act:clamp(48px,9vw,62px);       /* action-ring button        */
+    --joy:clamp(120px,30vw,170px);    /* joystick base diameter     */
+    --combat:calc(var(--fire) + var(--act)*1.6 + 24px); /* cluster reach */
+    --tone:rgba(232,163,61,.5);       /* default amber edge         */
+    --glass:rgba(14,18,22,.40);       /* control glass fill         */
   }
   #touch{position:fixed;inset:0;z-index:20;pointer-events:none;display:none;font-family:var(--mono);}
   body.touch.playing #touch{display:block;}
@@ -304,93 +307,100 @@
     border-radius:50%;border:2px solid var(--tone);background:var(--glass);
     color:var(--amber);font-family:var(--mono);font-size:12px;font-weight:bold;
     -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
-    backdrop-filter:blur(2px);box-shadow:0 2px 10px rgba(0,0,0,.35);
-    transition:transform .06s ease,background .08s ease,border-color .08s ease;
+    backdrop-filter:blur(3px);box-shadow:0 2px 10px rgba(0,0,0,.35);
+    transition:transform .06s ease,background .08s ease,border-color .08s ease,opacity .12s;
   }
-  .tb.active{background:rgba(232,163,61,.30);border-color:var(--amber);transform:scale(.92);}
+  .tb.active{background:rgba(232,163,61,.30);border-color:var(--amber);transform:scale(.9);}
 
-  /* ---- (1) left floating joystick ---- */
-  #joyZone{position:absolute;left:0;bottom:0;width:46vw;max-width:430px;height:62vh;pointer-events:auto;touch-action:none;z-index:21;}
+  /* ---- LEFT THUMB: floating movement joystick ---- */
+  #joyZone{position:absolute;left:0;bottom:0;width:42vw;max-width:420px;height:62vh;pointer-events:auto;touch-action:none;z-index:21;}
   #joy{
-    position:absolute;left:calc(var(--sal) + 8px);bottom:calc(var(--sab) + 8px);
+    position:absolute;left:calc(var(--sal) + 10px);bottom:calc(var(--sab) + 10px);
     width:var(--joy);height:var(--joy);border-radius:50%;
-    border:2px solid rgba(232,163,61,.32);background:rgba(20,24,28,.22);
+    border:2px solid rgba(232,163,61,.30);background:rgba(20,24,28,.20);
     transition:left .04s linear,bottom .04s linear,opacity .12s;
   }
-  #joyR{position:absolute;inset:14%;border-radius:50%;border:1px dashed rgba(232,163,61,.22);}
+  #joyR{position:absolute;inset:13%;border-radius:50%;border:1px dashed rgba(232,163,61,.20);}
+  /* sprint ring: lights amber when the knob is pushed to the rim (auto-sprint) */
+  #joyRun{position:absolute;inset:-2px;border-radius:50%;border:2px solid transparent;
+    box-shadow:0 0 0 transparent;transition:border-color .1s,box-shadow .12s;pointer-events:none;}
+  #joy.run #joyRun{border-color:var(--amber);box-shadow:0 0 16px rgba(232,163,61,.5);}
   #joyK{
-    position:absolute;left:50%;top:50%;width:40%;height:40%;
+    position:absolute;left:50%;top:50%;width:38%;height:38%;
     transform:translate(-50%,-50%);border-radius:50%;
     background:radial-gradient(circle at 38% 34%,rgba(255,214,150,.85),rgba(232,163,61,.55));
     border:2px solid rgba(255,224,170,.9);box-shadow:0 0 14px rgba(232,163,61,.45);
   }
 
-  /* ---- (2) FIRE + ADS, right side ---- */
-  #firepad{position:absolute;right:calc(var(--sar) + 4px);bottom:calc(var(--sab) + var(--act)*2 + 28px);width:max-content;pointer-events:none;z-index:22;}
+  /* ---- RIGHT THUMB: combat cluster (FIRE + ADS + action ring) ---- */
+  /* The cluster is one positioned box; FIRE is its anchor, the four action
+     buttons orbit it and ADS tucks above-left, all within a thumb's sweep. */
+  #combat{
+    position:absolute;right:calc(var(--sar) + 6px);bottom:calc(var(--sab) + 6px);
+    width:var(--combat);height:var(--combat);pointer-events:none;z-index:22;
+  }
   #bFire{
-    position:relative;width:var(--fire);height:var(--fire);font-size:0;
-    border-color:rgba(216,69,62,.85);background:rgba(46,16,16,.46);
-    box-shadow:0 0 16px rgba(216,69,62,.28),0 2px 10px rgba(0,0,0,.4);
+    right:0;bottom:0;width:var(--fire);height:var(--fire);font-size:0;
+    border-color:rgba(216,69,62,.85);background:rgba(46,16,16,.44);
+    box-shadow:0 0 18px rgba(216,69,62,.30),0 2px 10px rgba(0,0,0,.4);
   }
   #bFire::before{content:"";width:46%;height:46%;border-radius:50%;border:2px solid rgba(255,154,147,.9);background:rgba(216,69,62,.28);}
   #bFire.active{background:rgba(216,69,62,.5);border-color:#ff9a93;}
+  /* ADS sits just above-left of FIRE (right-thumb flick up) */
   #bAds{
-    position:absolute;right:calc(var(--fire) + 14px);bottom:6px;
-    width:var(--act);height:var(--act);font-size:24px;line-height:1;
-    color:#cfe6ff;border-color:rgba(111,168,220,.7);background:rgba(16,28,40,.46);
+    right:calc(var(--fire) + 8px);bottom:calc(var(--fire)*0.62);
+    width:var(--act);height:var(--act);font-size:22px;line-height:1;
+    color:#cfe6ff;border-color:rgba(111,168,220,.7);background:rgba(16,28,40,.44);
   }
   #bAds.active{background:rgba(111,168,220,.32);border-color:var(--blue);color:#fff;}
+  /* action ring: RELOAD (up), JUMP (up-left), CROUCH (left), USE (down-left) —
+     a quarter-arc around FIRE so the thumb reaches each with a short pivot. */
+  #combat .act{width:var(--act);height:var(--act);font-size:0;}
+  #combat .act i{font-style:normal;font-size:clamp(7px,1.5vw,10px);letter-spacing:.4px;}
+  #bRld   {right:calc(var(--fire)*0.16);bottom:calc(var(--fire) + 12px);border-color:rgba(232,163,61,.75);}
+  #bJump  {right:calc(var(--fire) + var(--act)*0.5 + 12px);bottom:calc(var(--fire) + var(--act)*0.5 + 4px);}
+  #bCrouch{right:calc(var(--fire) + var(--act) + 18px);bottom:calc(var(--act)*0.3);}
+  #bUse   {right:calc(var(--fire) + var(--act)*0.4 + 10px);bottom:calc(-1*var(--act)*0.05);border-color:rgba(87,192,107,.6);color:var(--go);}
+  #bCrouch.active{background:rgba(232,163,61,.30);border-color:var(--amber);}
 
-  /* ---- (3) reload / crouch / jump + use/nade/med cluster, bottom-right ---- */
-  #actpad{
-    position:absolute;right:calc(var(--sar) + 4px);bottom:calc(var(--sab) + 4px);
-    display:grid;grid-template-columns:repeat(3,var(--act));gap:9px;
-    pointer-events:none;z-index:21;
+  /* ---- weapon / throwable quick-bar ---- */
+  /* Anchored in the safe band between the joystick (left) and combat cluster
+     (right) and CENTRED within it, so it tracks the gap and never drifts into a
+     control as the screen narrows. --qbL/--qbR are the band edges. */
+  :root{
+    --qbL:calc(var(--sal) + var(--joy) + 18px);
+    --qbR:calc(100vw - var(--sar) - var(--combat) - 14px);
   }
-  #actpad .tb{position:relative;width:var(--act);height:var(--act);font-size:0;}
-  #actpad .tb i{font-style:normal;font-size:clamp(8px,1.7vw,11px);letter-spacing:.5px;}
-  #bRld{border-color:rgba(232,163,61,.75);}
-  #bHeal{border-color:rgba(87,192,107,.6);color:var(--go);}
-  #bNade{border-color:rgba(192,111,216,.55);color:#d9a9e8;}
-
-  /* ---- (4) lean / peek ---- */
-  .tb.lean{
-    bottom:calc(var(--sab) + var(--joy)*0.5 + 8px);width:clamp(44px,8vw,58px);height:clamp(44px,8vw,58px);
-    font-size:18px;border-color:rgba(232,163,61,.45);background:rgba(14,18,22,.36);z-index:22;
-  }
-  #bLeanL{left:calc(var(--sal) + var(--joy) + 16px);}
-  #bLeanR{left:calc(var(--sal) + var(--joy) + 16px + clamp(44px,8vw,58px) + 12px);}
-
-  /* ---- (5) weapon / throwable quick-bar, bottom-center ---- */
   #quickbar{
-    position:absolute;left:50%;bottom:calc(var(--sab) + 6px);transform:translateX(-50%);
+    position:absolute;left:calc((var(--qbL) + var(--qbR))/2);
+    bottom:calc(var(--sab) + 6px);transform:translateX(-50%);
     display:flex;gap:8px;pointer-events:none;z-index:21;
   }
   .qslot{
     pointer-events:auto;touch-action:none;-webkit-tap-highlight-color:transparent;
-    width:clamp(58px,12vw,80px);min-height:48px;padding:5px 4px 4px;
+    width:clamp(56px,11.5vw,78px);min-height:46px;padding:5px 4px 4px;
     display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;
-    border:1px solid var(--line);border-radius:9px;background:rgba(12,15,19,.6);
-    backdrop-filter:blur(2px);transition:border-color .08s,background .08s,transform .06s;
+    border:1px solid var(--line);border-radius:10px;background:rgba(12,15,19,.55);
+    backdrop-filter:blur(3px);transition:border-color .08s,background .08s,transform .06s,opacity .12s;
   }
   .qslot.on{border-color:var(--amber);background:rgba(232,163,61,.14);box-shadow:inset 0 -2px 0 var(--amber-d);}
   .qslot.active{transform:scale(.94);}
   .qslot .qi{font-size:18px;line-height:1;color:var(--amber);}
   .qslot .ql{font-size:8px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;}
   .qslot .qa{font-size:12px;font-weight:bold;color:var(--text);}
-  .qslot.empty{opacity:.45;}
-  .qslot.empty .qa{color:var(--dim);}
+  #qbNade .qi{color:var(--purp);} #qbMed .qi{color:var(--go);}
+  .qslot.empty{opacity:.4;} .qslot.empty .qa{color:var(--dim);}
 
-  /* ---- top-right utility stack ---- */
+  /* ---- top-right utility (fire-mode + bag) ---- */
   #utilpad{position:absolute;right:var(--sar);top:var(--sat);display:flex;gap:7px;pointer-events:none;z-index:22;}
-  #utilpad .tb{position:relative;pointer-events:auto;width:clamp(46px,9vw,58px);height:38px;border-radius:10px;font-size:11px;}
+  #utilpad .tb{position:relative;pointer-events:auto;width:clamp(48px,9vw,60px);height:38px;border-radius:10px;font-size:11px;}
 
-  /* ---- (6) top-left kills / alive ---- */
+  /* ---- top-left kills / alive ---- */
   #killbar{
-    position:absolute;left:calc(var(--sal) + 112px);top:var(--sat);
+    position:absolute;left:calc(var(--sal) + 108px);top:var(--sat);
     display:flex;align-items:center;gap:10px;pointer-events:none;z-index:22;
-    border:1px solid var(--line);border-radius:9px;background:rgba(12,15,19,.55);
-    padding:5px 11px;backdrop-filter:blur(2px);
+    border:1px solid var(--line);border-radius:9px;background:rgba(12,15,19,.5);
+    padding:5px 11px;backdrop-filter:blur(3px);
   }
   #killbar .kb{display:flex;flex-direction:column;align-items:center;line-height:1;}
   #killbar .kb span{font-size:17px;font-weight:bold;color:var(--amber);}
@@ -402,42 +412,42 @@
   @media(orientation:portrait){body.touch #rot{display:flex;}}
 
   /* ---- mobile HUD repositioning (around the touch furniture) ---- */
-  body.touch #mapwrap{left:var(--sal,max(10px,env(safe-area-inset-left)));right:auto;top:max(10px,env(safe-area-inset-top));width:96px;height:96px;}
-  body.touch #minimap{width:96px;height:96px;}
-  /* top-center stack (no overlaps): compass → objective, vertically spaced */
+  body.touch #mapwrap{left:var(--sal,max(10px,env(safe-area-inset-left)));right:auto;top:max(10px,env(safe-area-inset-top));width:92px;height:92px;}
+  body.touch #minimap{width:92px;height:92px;}
+  /* top-centre stack (no overlaps): compass → objective, vertically spaced */
   body.touch #threats{display:none;}                 /* superseded by #killbar */
-  /* (7) top-center compass heading strip — re-enabled on touch, sits up top */
-  body.touch #compass{display:block;top:var(--sat,8px);width:min(56vw,300px);}
+  body.touch #compass{display:block;top:var(--sat,8px);width:min(54vw,300px);}
   body.touch #obj{left:50%;right:auto;transform:translateX(-50%);top:calc(var(--sat,8px) + 30px);max-width:min(48vw,260px);text-align:center;}
   body.touch #objT{font-size:10px;letter-spacing:2px;}
   body.touch #objX{font-size:12px;} body.touch #zone{font-size:9px;}
   /* credits: a compact single-line pill, tucked top-right just left of #utilpad */
-  body.touch #wallet{left:auto;right:calc(var(--sar) + 3*clamp(46px,9vw,58px) + 2*7px + 12px);top:calc(var(--sat) + 5px);transform:none;text-align:right;display:flex;align-items:baseline;gap:7px;}
+  body.touch #wallet{left:auto;right:calc(var(--sar) + 2*clamp(48px,9vw,60px) + 7px + 12px);top:calc(var(--sat) + 5px);transform:none;text-align:right;display:flex;align-items:baseline;gap:7px;}
   body.touch #cr{font-size:15px;} body.touch #crL{display:none;} body.touch #lvl{margin-top:0;font-size:11px;}
-  body.touch #vit{left:max(12px,env(safe-area-inset-left));right:auto;transform:none;bottom:calc(min(30vw,168px) + 18px);}
-  body.touch .bw{width:min(40vw,180px);} body.touch .bw.sm{width:min(28vw,120px);}
-  /* ammo readout: bottom-center, just above the quick-bar (current weapon) */
-  body.touch #ammo{right:auto;left:50%;transform:translateX(-50%);top:auto;bottom:calc(var(--sab) + 64px);text-align:center;display:flex;flex-direction:column;align-items:center;}
+  /* vitals: bottom-left, above the joystick */
+  body.touch #vit{left:max(12px,env(safe-area-inset-left));right:auto;transform:none;bottom:calc(var(--joy) + var(--sab) + 22px);}
+  body.touch .bw{width:min(38vw,180px);} body.touch .bw.sm{width:min(26vw,120px);}
+  /* ammo readout: bottom-centre, just above the quick-bar (current weapon) */
+  body.touch #ammo{right:auto;left:calc((var(--qbL) + var(--qbR))/2);transform:translateX(-50%);top:auto;bottom:calc(var(--sab) + 60px);text-align:center;display:flex;flex-direction:column;align-items:center;}
   body.touch #ammo #amN{font-size:clamp(22px,5.2vw,34px);line-height:.9;}
   body.touch #ammo #wpn{font-size:10px;} body.touch #ammo #fmode{font-size:10px;}
   body.touch #ammo #slots{display:none;}              /* superseded by quick-bar */
   body.touch #ammo #nade{display:none;}
-  body.touch #feed{left:var(--sal,12px);right:auto;transform:none;bottom:auto;top:calc(var(--sat) + 96px);width:46vw;text-align:left;}
-  body.touch #prompt{bottom:calc(min(30vw,168px) + 64px);}
+  body.touch #feed{left:var(--sal,12px);right:auto;transform:none;bottom:auto;top:calc(var(--sat) + 96px);width:44vw;text-align:left;}
+  body.touch #prompt{bottom:calc(var(--joy) + var(--sab) + 76px);}
   @media(max-width:860px){
     #amN{font-size:30px;}.bw{width:150px;}#cr{font-size:18px;}#objX{font-size:13px;}#obj{max-width:200px;}
     .card{width:min(94vw,460px);padding:20px 22px;}.card.wide{width:96vw;}.card h1{font-size:30px;}
   }
   /* tight phones in landscape: trim the quick-bar so it never collides */
   @media(max-height:420px){
-    body.touch #ammo{bottom:calc(var(--sab) + 56px);}
+    body.touch #ammo{bottom:calc(var(--sab) + 54px);}
     #quickbar .ql{display:none;} .qslot{min-height:42px;}
   }
-  /* narrow landscape (≤720px): shrink the control metrics so the centered
-     quick-bar can never overlap the right-hand action cluster. */
+  /* narrow landscape (≤720px): shrink control metrics so the centred quick-bar
+     can never overlap the right-hand combat cluster. */
   @media(max-width:720px){
-    :root{--fire:clamp(70px,13vw,96px);--act:clamp(46px,8vw,58px);--joy:clamp(108px,26vw,150px);}
-    .qslot{width:clamp(52px,10vw,68px);} #quickbar{gap:6px;}
+    :root{--fire:clamp(72px,13.5vw,98px);--act:clamp(44px,8vw,58px);--joy:clamp(110px,26vw,150px);}
+    .qslot{width:clamp(52px,10vw,66px);} #quickbar{gap:6px;}
   }
   /* mobile inventory: fill screen, stack columns, comfortable scrolling */
   @media(max-width:760px){
