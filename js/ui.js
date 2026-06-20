@@ -20,6 +20,7 @@ import { Status } from "./status.js";
 import { Loot } from "./loot.js";
 import { Audio } from "./audio.js";
 import { Raid } from "./raid.js";
+import { Projectiles } from "./projectiles.js";
 import { createPreview } from "./preview.js";
 import { buildMannequin } from "./mannequin.js";
 
@@ -49,7 +50,7 @@ export const UI = (function(){
     $('stance').textContent = Input.crouch?'CROUCH':'STAND';
     document.querySelectorAll('.wslot').forEach(s=>s.classList.toggle('on', s.dataset.s===pl.activeSlot));
     $('cr').textContent=pr.credits; $('lvl').textContent=`LVL ${pr.level}`;
-    $('nade').textContent = S.mode===MODE.RAID? `Grenades: ${nadeCount()}`:'';
+    $('nade').textContent = S.mode===MODE.RAID? throwLine():'';
     if(Input.isTouch) refreshTouchHUD(pl,pr);
   }
   // mobile-only HUD: kills/alive readout + the weapon/throwable quick-bar.
@@ -73,6 +74,18 @@ export const UI = (function(){
   function medCount(){ let n=0; for(const g of Inventory.carried()) for(const t of g.items) if(t.def.type==='med') n+=t.qty; return n; }
   function reserveOf(st){ if(!st) return 0; const grids=S.mode===MODE.RAID?Inventory.carried():[Inventory.stash()]; let n=0; for(const g of grids) for(const t of g.items) if(t.def.type==='ammo'&&t.def.cal===st.cal) n+=t.qty; return n; }
   function nadeCount(){ let n=0; for(const g of Inventory.carried()) n+=g.count('nade_frag'); return n; }
+  // HUD throwable readout: frags (G / quickbar) + the currently-selected throwable
+  // for the Q throw (smoke/flash/inc/etc.) so all carried ordnance is visible.
+  function throwLine(){
+    let line=`Frag: ${nadeCount()}`;
+    try{ const sel=Projectiles.selectedKind&&Projectiles.selectedKind();
+      const have=(Projectiles.carriedKinds&&Projectiles.carriedKinds())||{};
+      const kinds=Object.keys(have);
+      if(sel && sel!=='frag' && have[sel]) line+=` · ${sel.toUpperCase()}: ${have[sel]}`;
+      else if(kinds.length>1) line+=` · +${kinds.length-1} type${kinds.length>2?'s':''}`;
+    }catch(_){ }
+    return line;
+  }
 
   // ---------- overlay helpers ----------
   const OVS=['ovStart','ovInv','ovVendor','ovCraft','ovSkill','ovExtract','ovResult','ovPause','ovSettings','ovMod'];
@@ -100,10 +113,12 @@ export const UI = (function(){
     $('startCard').innerHTML=`
       <div class="eb">Tactical Extraction // v0.2</div><h1>LootNShoot</h1>
       <p class="sub">Gear up in the safehouse, ride the train out to a hostile stop, clear it, grab loot, then choose to extract or push the train deeper for bigger rewards and risk. Die in the field and your pack & rig are gone.</p>
-      <div class="hint"><b>WASD</b> move · <b>SPACE</b> jump · <b>C</b> crouch · <b>L-CLICK</b> fire · <b>R-CLICK</b> ADS · <b>R</b> reload · <b>F</b> pick up · <b>E</b> loot/interact · <b>TAB</b> inventory · rebind all in Settings</div>
+      <div class="hint"><b>WASD</b> move · <b>SPACE</b> jump · <b>C</b> crouch · <b>L-CLICK</b> fire · <b>R-CLICK</b> ADS · <b>R</b> reload · <b>Z</b> melee · <b>G</b> grenade · <b>F</b> pick up · <b>E</b> loot/interact · <b>TAB</b> inventory · rebind all in Settings</div>
       <div class="btn" id="bGo"><span class="k">▶</span> ${has?'Continue':'Enter Safehouse'}</div>
       <div class="btn" id="bSet"><span class="k">⚙</span> Settings</div>
-      ${has?'<div class="btn" id="bNew"><span class="k">＋</span> New Game (wipe save)</div>':''}`;
+      ${has?'<div class="btn" id="bNew"><span class="k">＋</span> New Game (wipe save)</div>':''}
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:18px;font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;">
+        <span>${has?'Save loaded':'No save — fresh start'}</span><span class="soon">More stops &amp; bosses</span></div>`;
     $('bGo').onclick=()=>{ S.profile = has||Save.newProfile(); Progression.recompute(); Input.applySettings(); hideAll(); World.buildHub(); };
     $('bSet').onclick=()=>{ if(!S.profile){ S.profile = has||Save.newProfile(); Progression.recompute(); } openSettings(); };
     if(has) $('bNew').onclick=()=>{ Save.wipe(); S.profile=Save.newProfile(); Progression.recompute(); Input.applySettings(); hideAll(); World.buildHub(); };
@@ -175,6 +190,8 @@ export const UI = (function(){
     if(e.rig){ gridMap.rig=e.rig.inst.container; cols+=gridHTML(gridMap.rig,'Rig','rig'); }
     if(e.backpack){ gridMap.backpack=e.backpack.inst.container; cols+=gridHTML(gridMap.backpack,'Backpack','backpack'); }
     if(S.mode===MODE.HUB){ gridMap.stash=Inventory.stash(); cols+=gridHTML(gridMap.stash,'Stash','stash'); }
+    // no carried containers (e.g. deployed with no rig/pack) — show why, not a void
+    if(!cols && S.mode===MODE.RAID) cols=`<div class="col"><div class="emptyState"><span class="ic">🎒</span>No rig or pack equipped — you have nowhere to stow loot. Equip one back at the stash.</div></div>`;
     return cols;
   }
 
@@ -537,7 +554,7 @@ export const UI = (function(){
           <div class="shopic">${iconFor(it.def)}</div>
           <div class="shopnm">${it.def.name}</div><div class="shopmeta">${it.def.type}${it.qty>1?` · ×${it.qty}`:''}</div>
           <button class="shopbuy sell" data-sell="${it.uid}">+${Inventory.sellValue(it)}c</button></div>`).join('')+`</div>`
-        : '<div class="mini" style="padding:30px 0;text-align:center">Stash is empty — bring back loot to sell.</div>';
+        : '<div class="emptyState"><span class="ic">📦</span>Stash is empty — bring back loot from a raid to sell.</div>';
     } else { // buyback
       const list=Vendor.buybackList();
       body = list.length ? `<div class="shopgrid">`+list.map(b=>{ const d=DATA.items[b.id]||{}; const can=cr>=b.price;
@@ -545,7 +562,7 @@ export const UI = (function(){
           <div class="shopic">${iconFor(d)}</div>
           <div class="shopnm">${b.name}</div><div class="shopmeta">recently sold${b.qty>1?` · ×${b.qty}`:''}</div>
           <button class="shopbuy ${can?'':'no'}" data-bb="${b.uid}">${b.price}c</button></div>`; }).join('')+`</div>`
-        : '<div class="mini" style="padding:30px 0;text-align:center">Nothing to buy back — items you sell show up here.</div>';
+        : '<div class="emptyState"><span class="ic">↩️</span>Nothing to buy back — items you sell linger here for 30 minutes.</div>';
     }
     // reputation bar (standing + progress to the next tier + the active buy discount)
     const disc=Math.round((1-rep.buyMult)*100);
@@ -601,14 +618,24 @@ export const UI = (function(){
 
   // ---------- DEPLOY ----------
   function openDeploy(){ openOverlay('ovExtract'); const e=S.profile.equip;
+    const armed=!!(e.primary||e.secondary);
+    const hasMed=medCount()>0, hasPack=!!(e.rig||e.backpack);
+    // a soft readiness checklist so the player isn't flung into a raid empty-handed
+    const chk=(ok,t)=>`<div class="row"><span>${ok?'✓':'⚠'} ${t}</span><b style="color:${ok?'var(--go)':'var(--amber)'}">${ok?'Ready':'Missing'}</b></div>`;
     $('extractCard').innerHTML=`<div class="eb">Train // Deploy</div><h1>Deploy</h1>
-      <p class="sub">Board the train to the first stop. Loot fills your rig and pack; bring meds and ammo.</p>
+      <p class="sub">Board the train to the first stop. Loot fills your rig and pack; bring meds and ammo. Die in the field and your pack &amp; rig are lost.</p>
       <div class="row"><span>Primary</span><b>${e.primary?e.primary.def.name:'—'}</b></div>
       <div class="row"><span>Secondary</span><b>${e.secondary?e.secondary.def.name:'—'}</b></div>
       <div class="row"><span>Armor</span><b>${e.armor?e.armor.def.name:'none'}</b></div>
-      <div class="btn" id="dGo"><span class="k">▶</span> Board train · Deploy</div>
+      <div style="font-family:var(--mono);font-size:11px;letter-spacing:2px;text-transform:uppercase;color:var(--amber);margin:14px 0 2px;">Loadout check</div>
+      ${chk(armed,'Weapon equipped')}
+      ${chk(hasPack,'Rig or pack for loot')}
+      ${chk(hasMed,'Med in your kit')}
+      ${armed?'':'<div class="emptyState" style="margin-top:12px"><span class="ic">🔫</span>No weapon equipped — gear up at the stash first.</div>'}
+      <div class="btn ${armed?'':'disabled'}" id="dGo"><span class="k">▶</span> Board train · Deploy</div>
       <div class="btn" id="dClose"><span class="k">ESC</span> Not yet</div>`;
-    $('dGo').onclick=()=>Raid.deploy(); $('dClose').onclick=closeMenus;
+    $('dGo').onclick=()=>{ if(!armed){ toast('Equip a weapon before deploying','neg'); return; } Raid.deploy(); };
+    $('dClose').onclick=closeMenus;
   }
 
   // ---------- EXTRACT CHOICE ----------
@@ -685,11 +712,23 @@ export const UI = (function(){
       + `<div class="btn" id="rBack" style="margin-top:16px"><span class="k">▶</span> Return to safehouse</div>`;
     $('rBack').onclick=()=>{ hideAll(); S.run=null; World.buildHub(); };
   }
-  function pause(){ if(S.mode!==MODE.RAID) return; S.setMode(MODE.PAUSE); hideAll(); $('ovPause').classList.add('show');
-    $('pauseCard').innerHTML=`<div class="eb">Paused</div><h1>Standby</h1><p class="sub">Resume to lock back in, or open settings.</p>
+  let confirmAbandon=false;
+  function pause(){ if(S.mode!==MODE.RAID) return; confirmAbandon=false; S.setMode(MODE.PAUSE); hideAll(); $('ovPause').classList.add('show'); renderPause(); }
+  function renderPause(){
+    const kills=(S.run&&S.run.kills)||0, depth=String.fromCharCode(65+((S.run&&S.run.stopIndex)||0)), bag=(S.run&&S.run.bagValue)||0;
+    $('pauseCard').innerHTML=`<div class="eb">Paused</div><h1>Standby</h1><p class="sub">Resume to lock back in, open settings, or abandon the run.</p>
+      <div class="row"><span>Sector</span><b>${depth}</b></div>
+      <div class="row"><span>Kills</span><b>${kills}</b></div>
+      <div class="row"><span>Carried value</span><b>${bag}c</b></div>
       <div class="btn" id="pR"><span class="k">▶</span> Resume</div>
-      <div class="btn" id="pS"><span class="k">⚙</span> Settings</div>`;
-    $('pR').onclick=resume; $('pS').onclick=openSettings; }
+      <div class="btn" id="pS"><span class="k">⚙</span> Settings</div>
+      <div class="btn" id="pA"><span class="k">✕</span> ${confirmAbandon?'<span style="color:var(--bad)">Confirm abandon — lose carried loot</span>':'Abandon run'}</div>`;
+    $('pR').onclick=resume; $('pS').onclick=openSettings;
+    $('pA').onclick=()=>{ if(!confirmAbandon){ confirmAbandon=true; renderPause(); return; } abandonRun(); };
+  }
+  // leave the field without banking: carried bag value is forfeit, but you keep your
+  // equipped weapons/armor (same as death's gear rules) and walk away alive.
+  function abandonRun(){ document.exitPointerLock(); for(const slot of ['rig','backpack']){ const it=S.profile.equip[slot]; if(it&&it.inst&&it.inst.container){ it.inst.container.items=[]; } } hideAll(); S.run=null; Save.save(); World.buildHub(); }
   function resume(){ hideAll(); S.setMode(MODE.RAID); if(!Input.isTouch) GFX.dom.requestPointerLock(); }
 
   // HUD reactive bindings

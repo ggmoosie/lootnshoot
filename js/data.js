@@ -157,10 +157,12 @@ DATA.iconId = { ammo_556:'🟡', ammo_9mm:'⚪', ammo_762:'🟠', att_reddot:'�
 // ----- default keybinds (rebindable in Settings; persisted in profile.settings). -----
 DATA.binds = { forward:'KeyW', back:'KeyS', left:'KeyA', right:'KeyD', jump:'Space', crouch:'KeyC', sprint:'ShiftLeft',
   reload:'KeyR', interact:'KeyE', pickup:'KeyF', inventory:'Tab', weapon1:'Digit1', weapon2:'Digit2',
-  grenade:'KeyG', heal:'KeyH', drone:'KeyT', firemode:'KeyB', melee:'KeyV' };
+  // melee moved off KeyV (it collided with throwCycle, also default KeyV — pressing V
+  // fired BOTH a melee swing and a throwable-cycle). Melee now lives on KeyZ.
+  grenade:'KeyG', heal:'KeyH', drone:'KeyT', firemode:'KeyB', melee:'KeyZ', ammotype:'KeyX' };
 DATA.bindLabels = { forward:'Move Forward', back:'Move Back', left:'Strafe Left', right:'Strafe Right', jump:'Jump',
   crouch:'Crouch', sprint:'Sprint', reload:'Reload', interact:'Interact / Loot', pickup:'Pick Up Item',
-  inventory:'Inventory', weapon1:'Primary', weapon2:'Secondary', grenade:'Grenade', heal:'Use Med', drone:'Deploy Drone', firemode:'Fire Mode', melee:'Melee Strike' };
+  inventory:'Inventory', weapon1:'Primary', weapon2:'Secondary', grenade:'Grenade', heal:'Use Med', drone:'Deploy Drone', firemode:'Fire Mode', melee:'Melee Strike', ammotype:'Cycle Ammo Type' };
 
 // ----- raid stops: difficulty curve by stopIndex. -----
 DATA.stops = {

@@ -141,7 +141,7 @@ export const Input = (function(){
     const modeBtn=$('bMode');
     modeBtn.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();if(S.mode===MODE.RAID){Weapons.cycleMode();const w=Weapons.activeItem();if(w)modeBtn.textContent=Weapons.modeOf(w).toUpperCase();}},{passive:false});
     const run=$('bRun');
-    run.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();const on=!keys['ShiftLeft'];keys['ShiftLeft']=on;run.classList.toggle('active',on);},{passive:false});
+    run.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();const sk=code('sprint');const on=!keys[sk];keys[sk]=on;run.classList.toggle('active',on);},{passive:false});
     tap('bInv',()=>{ if(S.mode===MODE.HUB||S.mode===MODE.RAID) UI.toggleInventory(); });
 
     // ---- lean roll: lerp camera.rotation.z toward the held lean (purely visual) ----

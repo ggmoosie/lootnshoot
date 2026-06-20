@@ -443,3 +443,73 @@
     .lootside{flex:1 1 100%;}
     .lootside+.lootside{border-left:0;padding-left:0;border-top:1px solid var(--line);padding-top:14px;}
   }
+
+  /* ============================================================= *
+   *  POLISH PASS — accessibility, states, motion, cohesion        *
+   *  (additive: lives at the end so it overlays the rules above)   *
+   * ============================================================= */
+
+  /* ---- keyboard focus rings (none existed) — amber halo, never on mouse ---- */
+  .btn:focus-visible,.tab:focus-visible,.shopbuy:focus-visible,.set input:focus-visible,
+  .key:focus-visible,.eslot:focus-visible,.mtile:focus-visible,.qslot:focus-visible,
+  .ci:focus-visible,.bphd:focus-visible,.bpopt:focus-visible{
+    outline:2px solid var(--amber);outline-offset:2px;border-radius:4px;
+  }
+  /* don't double up the default focus on overlay scroll containers */
+  .ov:focus,.card:focus,.gridscroll:focus{outline:none;}
+
+  /* ---- consistent disabled affordance across every actionable control ---- */
+  .btn.disabled,.shopbuy.no,.shopbuy:disabled,.tab:disabled,.bpopt.none{
+    cursor:not-allowed;
+  }
+  button:disabled{cursor:not-allowed;}
+  .btn:not(.disabled),.tab,.shopbuy:not(.no),.key,.eslot,.mtile,.qslot,.ci,.bphd,.bpopt:not(.none){cursor:pointer;}
+
+  /* ---- press / active feedback on the menu buttons (was hover-only) ---- */
+  .btn:not(.disabled):active{transform:translateY(1px);background:#0e1419;}
+  .tab:active{opacity:.85;}
+  .shopbuy:not(.no):active{transform:translateY(1px);}
+  .key:active{transform:translateY(1px);}
+
+  /* ---- richer hover on the credit pill + reputation header ---- */
+  .creditpill{transition:border-color .12s,background .12s;}
+
+  /* ---- card entrance: a quick rise+fade so overlays don't pop in hard ---- */
+  .ov.show .card{animation:cardIn .18s ease-out both;}
+  @keyframes cardIn{from{opacity:0;transform:translateY(10px) scale(.992);}to{opacity:1;transform:none;}}
+
+  /* ---- unify scrollbars across every overlay (only .gridscroll had them) ---- */
+  .ov,.card,.bpdrop{scrollbar-width:thin;scrollbar-color:#2a3138 transparent;}
+  .ov::-webkit-scrollbar,.card::-webkit-scrollbar,.bpdrop::-webkit-scrollbar{width:9px;height:9px;}
+  .ov::-webkit-scrollbar-thumb,.card::-webkit-scrollbar-thumb,.bpdrop::-webkit-scrollbar-thumb{background:#2a3138;border-radius:5px;}
+  .ov::-webkit-scrollbar-thumb:hover,.card::-webkit-scrollbar-thumb:hover{background:#3a434c;}
+  .ov::-webkit-scrollbar-track,.card::-webkit-scrollbar-track{background:transparent;}
+
+  /* ---- low-ammo readout gently pulses so it reads in peripheral vision ---- */
+  #amN.low .mg{animation:lowAmmo 1s ease-in-out infinite;}
+  @keyframes lowAmmo{50%{opacity:.45;}}
+
+  /* ---- empty-state helper (used by inventory/vendor/loot empty messages) ---- */
+  .emptyState{font-family:var(--mono);font-size:12px;color:var(--dim);text-align:center;
+    padding:26px 14px;border:1px dashed var(--line);border-radius:8px;background:rgba(10,12,14,.4);line-height:1.6;}
+  .emptyState .ic{display:block;font-size:30px;opacity:.5;margin-bottom:8px;}
+
+  /* ---- "coming soon" placeholder chip — clean, clearly-labeled, never a dead end ---- */
+  .soon{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:10px;
+    letter-spacing:1px;text-transform:uppercase;color:var(--dim);border:1px dashed var(--line);
+    border-radius:20px;padding:3px 10px;background:rgba(10,12,14,.4);}
+  .soon::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--amber);opacity:.7;}
+
+  /* ============================================================= *
+   *  prefers-reduced-motion — honor the OS setting (was unhandled) *
+   *  kill transitions/animations; keep instant state changes.     *
+   * ============================================================= */
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{
+      animation-duration:.001ms !important;animation-iteration-count:1 !important;
+      transition-duration:.001ms !important;scroll-behavior:auto !important;
+    }
+    .ov.show .card{animation:none;}
+    #amN.low .mg{animation:none;}
+    #banner{transition:opacity .001ms;}
+  }
