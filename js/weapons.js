@@ -21,7 +21,11 @@ import { Player } from "./player.js";
 export const Weapons = (function(){
   const ray=new T.Raycaster();
   let lastShot=0, reloading=false, reloadEnd=0;
-  let gun=null, muzzle=null, attachGroup=null, lastAttachSig='', laserDot=null;
+  let gun=null, muzzle=null, attachGroup=null, lastAttachSig='', laserDot=null, ironSight=null;
+  // local-space point (in the gun group) of the ACTIVE sight the player aims through:
+  // the installed optic's reticle housing, or the built-in iron sight. ADS aligns
+  // THIS point to screen centre so you look through the optic, not the off-bore body.
+  let sightLocal=new T.Vector3(.22,-.08,-.55);
   let prevFire=false, burstLeft=0, recoilDebt=0, bobT=0, swayX=0, swayY=0, lastYaw=0, lastPitch=0;
   // ---- holster / draw state (feat/lns-weapons) ----
   // Weapons SPAWN HOLSTERED. `holstered` gates fire/ADS and drops the viewmodel
@@ -42,6 +46,19 @@ export const Weapons = (function(){
     const bar=new T.Mesh(new T.BoxGeometry(.05,.06,.34),m); bar.position.set(.22,-.17,-.85);
     const grip=new T.Mesh(new T.BoxGeometry(.07,.16,.08),m); grip.position.set(.22,-.28,-.42);
     g.add(body,bar,grip);
+    // ---- built-in IRON SIGHTS (front post + rear notch on top of the receiver) ----
+    // A small group sitting just above the bore. Shown by default; HIDDEN whenever an
+    // optic is installed (refreshAttachments toggles it). ADS aligns the FRONT POST
+    // tip to screen centre so bare-gun aiming looks down the irons, not the off-bore
+    // body. Kept thin/dark so it reads as sights, not bulk.
+    ironSight=new T.Group();
+    const ironMat=new T.MeshStandardMaterial({color:0x0c0e10,roughness:.5,metalness:.6});
+    const frontPost=new T.Mesh(new T.BoxGeometry(.006,.05,.01), ironMat); frontPost.position.set(.22,-.085,-.92);
+    const frontRing=new T.Mesh(new T.BoxGeometry(.05,.012,.01), ironMat); frontRing.position.set(.22,-.115,-.92);
+    const rearL=new T.Mesh(new T.BoxGeometry(.012,.03,.01), ironMat); rearL.position.set(.205,-.095,-.5);
+    const rearR=new T.Mesh(new T.BoxGeometry(.012,.03,.01), ironMat); rearR.position.set(.235,-.095,-.5);
+    const rearBase=new T.Mesh(new T.BoxGeometry(.06,.012,.012), ironMat); rearBase.position.set(.22,-.108,-.5);
+    ironSight.add(frontPost,frontRing,rearL,rearR,rearBase); g.add(ironSight);
     attachGroup=new T.Group(); g.add(attachGroup);
     const fm=new T.SpriteMaterial({color:0xffcc55,transparent:true,opacity:0,depthTest:false});
     muzzle=new T.Sprite(fm); muzzle.scale.set(.4,.4,.4); muzzle.position.set(.22,-.17,-1.05); g.add(muzzle);
@@ -63,17 +80,25 @@ export const Weapons = (function(){
     const sig = it ? S.player.activeSlot+'|'+Object.entries(it.inst.attachments||{}).map(a=>a.join(':')).sort().join(',') : '';
     if(sig===lastAttachSig) return; lastAttachSig=sig;
     while(attachGroup.children.length) attachGroup.remove(attachGroup.children[0]);
-    if(!it) return; const att=it.inst.attachments||{}; const dark=new T.MeshStandardMaterial({color:0x101316,roughness:.5,metalness:.6});
+    if(!it){ if(ironSight) ironSight.visible=true; sightLocal.set(.22,-.095,-.5); return; }
+    const att=it.inst.attachments||{}; const dark=new T.MeshStandardMaterial({color:0x101316,roughness:.5,metalness:.6});
+    // IRON SIGHTS are the bare-gun sight picture — hide them the moment an optic is
+    // installed (you aim through the optic instead), show them again when it's off.
+    if(ironSight) ironSight.visible = !att.optic;
+    // default the ADS aim point to the iron sight's rear notch; an optic overrides it.
+    sightLocal.set(.22,-.095,-.5);
     if(att.optic){ const opEff=DATA.attachments[att.optic]; const scope=(opEff&&opEff.reticle)?opEff.reticle==='crosshair':att.optic==='att_scope';
       const mount=new T.Mesh(new T.BoxGeometry(.05,.05,scope?.26:.1), dark); mount.position.set(.22,-.10,scope?-.62:-.6); attachGroup.add(mount);
       if(scope){
         const lens=new T.Mesh(new T.CylinderGeometry(.045,.045,.04,12), new T.MeshStandardMaterial({color:0x224455,emissive:0x113344,emissiveIntensity:.6})); lens.rotation.x=Math.PI/2; lens.position.set(.22,-.08,-.5); attachGroup.add(lens);
+        sightLocal.set(.22,-.08,-.5);   // aim through the scope lens centre
       } else {
         // RED-DOT / HOLO: a hollow RING housing (TorusGeometry, NOT a solid disc)
         // with a small glowing DOT floating at its center — a functional reticle.
         const eff=DATA.attachments[att.optic]; const dot=parseInt((eff&&eff.reticleColor||'#ff3b30').slice(1),16)||0xff3b30;
         const ring=new T.Mesh(new T.TorusGeometry(.032,.008,8,16), dark); ring.position.set(.22,-.08,-.55); attachGroup.add(ring);
         const glow=new T.Mesh(new T.SphereGeometry(.008,8,8), new T.MeshStandardMaterial({color:dot,emissive:dot,emissiveIntensity:1.4})); glow.position.set(.22,-.08,-.55); attachGroup.add(glow);
+        sightLocal.set(.22,-.08,-.55);  // aim through the red-dot/holo reticle centre
       }
     }
     if(att.muzzle){ const sup=att.muzzle==='att_suppressor'; const dev=new T.Mesh(new T.CylinderGeometry(sup?.04:.05,sup?.04:.05,sup?.2:.1,10), dark); dev.rotation.x=Math.PI/2; dev.position.set(.22,-.17,sup?-1.0:-.95); attachGroup.add(dev); }
@@ -195,6 +220,9 @@ export const Weapons = (function(){
   }
 
   function activeItem(){ return S.profile.equip[S.player.activeSlot]; }
+  // INFINITE AMMO (settings toggle): when on, firing never drains the mag and reloads
+  // are free + instant — no inventory rounds are consumed. Read live each shot.
+  function infiniteAmmo(){ return !!(S.profile && S.profile.settings && S.profile.settings.infiniteAmmo); }
   // computed stats with attachment effects + skill damage.
   // Attachment defs carry `mods` (multiplicative), `add` (additive), `zoom`
   // (sets outright), and flags (`quiet`, `laser`). New 1.0-baselined scalars —
@@ -396,6 +424,8 @@ export const Weapons = (function(){
   function reload(){
     const it=activeItem(); if(!it) return; const st=stats(it);
     if(reloading || it.inst.ammo>=st.mag) return;
+    // infinite ammo: instant, free top-up — no reserve drain, no reload timer
+    if(infiniteAmmo()){ it.inst.ammo=st.mag; Audio.play('reload'); Events.emit('weapon:changed'); return; }
     const t=loadedType(it);
     // must have rounds of the loaded type in inventory to top up the mag
     if(t && reserveOfItem(t.item)<=0){
@@ -408,6 +438,8 @@ export const Weapons = (function(){
   }
   function finishReload(){
     const it=activeItem(); const st=stats(it);
+    // infinite ammo toggled on mid-reload: free fill, consume no reserve
+    if(infiniteAmmo()){ it.inst.ammo=st.mag; reloading=false; UI.flashReload(''); Audio.play('reload'); Events.emit('weapon:changed'); return; }
     const t=loadedType(it);
     const need=Math.max(0, st.mag - (it.inst.ammo||0));
     if(t && need>0){
@@ -440,12 +472,13 @@ export const Weapons = (function(){
 
   function fire(){
     if(reloading || holstered) return false; const it=activeItem(); if(!it) return false; const st=stats(it);
-    if(it.inst.ammo<=0){ reload(); return false; }
+    const inf=infiniteAmmo();
+    if(!inf && it.inst.ammo<=0){ reload(); return false; }
     // active ammo type modifies the shot (damage / pen / range / recoil / tracer)
     const at = loadedType(it) || { dmg:1, pen:0.3, range:1, recoil:1, tracer:false, color:0xffd27a };
     const interval=60/st.rpm;
     if(Clock.now-lastShot<interval) return false;
-    lastShot=Clock.now; it.inst.ammo--;
+    lastShot=Clock.now; if(inf){ it.inst.ammo=Math.max(it.inst.ammo, st.mag); } else it.inst.ammo--;
     const suppressed = !!(it.inst.attachments && Object.keys(it.inst.attachments).some(s=>{ const a=DATA.attachments[it.inst.attachments[s]]; return a&&a.quiet; }));
     muzzle.material.opacity=1; muzzle.material.rotation=Math.random()*Math.PI;
     const kick=st.recoil*(at.recoil||1)*(S.player.ads?0.55:1);
@@ -554,6 +587,10 @@ export const Weapons = (function(){
 
   function update(dt){
     refreshAttachments();
+    // SAFEZONE / out-of-field: NO held gun. The viewmodel only shows in a raid so the
+    // safehouse view is clear (no weapon blocking the screen while you gear up/trade).
+    if(gun) gun.visible = (S.mode===MODE.RAID);
+    if(laserDot && S.mode!==MODE.RAID) laserDot.visible=false;
     if(muzzle && muzzle.material.opacity>0) muzzle.material.opacity=Math.max(0,muzzle.material.opacity-dt*12);
     if(reloading && Clock.now>=reloadEnd) finishReload();
     // recoil recovery: spring the kicked aim back down
@@ -589,8 +626,14 @@ export const Weapons = (function(){
       const fdir=new T.Vector3(); GFX.camera.getWorldDirection(fdir); const forg=new T.Vector3(); GFX.camera.getWorldPosition(forg);
       ray.set(forg,fdir); ray.far=1.15; const wh=ray.intersectObjects(World.solids,false); ray.far=Infinity;
       const wall = wh.length? clamp(1-wh[0].distance/1.15,0,1):0;
-      // target pose: hip (meshes already sit lower-right) vs ADS (centered + raised)
-      let tx = ads?-0.22:0.0, ty = ads?0.12:0.0, tz = ads?-0.05:0.0, trx=0;
+      // target pose: hip (meshes already sit lower-right) vs ADS. For ADS we shift
+      // the whole gun so the ACTIVE SIGHT (sightLocal = optic reticle, or iron front
+      // post) lands at screen centre — you look THROUGH the optic, not past the
+      // off-bore body. Aligning to sightLocal (instead of a hardcoded offset) makes
+      // a scoped gun, a red-dot, and bare irons each centre on their own sight.
+      let tx = ads?-sightLocal.x : 0.0,
+          ty = ads?-sightLocal.y : 0.0,
+          tz = ads?-0.05 : 0.0, trx=0;
       tx += swayX*(ads?0.25:1); ty += swayY*(ads?0.25:1);
       ty -= wall*0.13; tz += wall*0.17; trx += wall*0.5;
       if(reloading){ const st2=stats(it); const dur=(st2?st2.reload:1)*Progression.reloadMult(); const prog=clamp(1-(reloadEnd-Clock.now)/Math.max(0.01,dur),0,1); const dip=Math.sin(prog*Math.PI); ty-=dip*0.14; tz+=dip*0.04; trx+=dip*0.8; }

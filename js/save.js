@@ -14,7 +14,7 @@ export const Save = (function(){
       skills:{vitality:0, athletics:0, marksman:0, engineer:0},
       equip:{primary:null, secondary:null, helmet:null, armor:null, clothing:null, rig:null, backpack:null},
       stash:new Grid(10,16),
-      settings:{ sens:1, invertY:false, fov:78, binds:Object.assign({},DATA.binds) },
+      settings:{ sens:1, invertY:false, fov:78, infiniteAmmo:false, binds:Object.assign({},DATA.binds) },
     };
     // starter loadout
     const carbine=newItem('wpn_carbine'); carbine.inst.ammo=30;
@@ -38,7 +38,7 @@ export const Save = (function(){
   function desProfile(str){
     const o=JSON.parse(str);
     const p={credits:o.credits, level:o.level, xp:o.xp, skillPoints:o.skillPoints, skills:o.skills,
-      settings:Object.assign({ sens:1, invertY:false, fov:78, binds:Object.assign({},DATA.binds) }, o.settings||{}),
+      settings:Object.assign({ sens:1, invertY:false, fov:78, infiniteAmmo:false, binds:Object.assign({},DATA.binds) }, o.settings||{}),
       stash:Grid.fromJSON(o.stash), equip:{}};
     p.settings.binds=Object.assign({},DATA.binds,p.settings.binds||{});
     for(const s of EQUIP_SLOTS) p.equip[s]= o.equip[s]?desItem(o.equip[s]):null;

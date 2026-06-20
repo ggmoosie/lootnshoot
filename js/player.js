@@ -33,6 +33,7 @@ export const Player = (function(){
     const p=GFX.yaw.position;
     vault={ t:0, dur:plan.dur||0.45, type:plan.type,
             sx:p.x, sz:p.z, lx:plan.land.x, lz:plan.land.z,
+            cx:p.x, cz:p.z,                       // last KNOWN-CLEAR position on the path
             peak:(plan.type==='climb'?0.85:0.5)+ (plan.rise||1)*0.15 };  // eye-arc height
     Audio.play('ui');
   }
@@ -40,8 +41,16 @@ export const Player = (function(){
     vault.t+=dt; const k=Math.min(1, vault.t/vault.dur);
     const ease=k<0.5 ? 2*k*k : 1-Math.pow(-2*k+2,2)/2;            // easeInOutQuad
     const p=GFX.yaw.position;
-    p.x=vault.sx+(vault.lx-vault.sx)*ease;
-    p.z=vault.sz+(vault.lz-vault.sz)*ease;
+    // proposed slide point this frame — a STRAIGHT interp start→land (no lateral
+    // teleport: the land spot was probed along the player's facing).
+    const nx=vault.sx+(vault.lx-vault.sx)*ease;
+    const nz=vault.sz+(vault.lz-vault.sz)*ease;
+    // CLAMP the path: only advance if the next point is clear of walls. We're going
+    // OVER the obstacle (eye arcs above the lip), so a body-radius probe at the
+    // obstacle face would always fail — use a SMALL probe so we glide over the
+    // vaulted ledge but still STOP dead at any real wall we'd otherwise clip through.
+    if(World.spotClear(nx,nz,RADIUS*0.35)){ vault.cx=nx; vault.cz=nz; }
+    p.x=vault.cx; p.z=vault.cz;
     // cosmetic clamber arc: eye rises over the lip then settles to stand height
     const arc=Math.sin(k*Math.PI)*vault.peak;
     GFX.yaw.position.y=HEIGHT+arc*(vault.type==='climb'?0.7:0.45);
@@ -49,7 +58,10 @@ export const Player = (function(){
     // a brief downward pitch nudge so the camera "looks at the lip" mid-clamber
     const dip=Math.sin(k*Math.PI)*0.18;
     GFX.pitch.rotation.x=clamp(GFX.pitch.rotation.x*(1-dt*6) - dip*dt*6, -1.5, 1.5);
-    if(k>=1){ jumpY=0; velY=0; grounded=true; GFX.yaw.position.y=HEIGHT; vault=null; }
+    if(k>=1){ jumpY=0; velY=0; grounded=true; GFX.yaw.position.y=HEIGHT;
+      // settle on the last clear point, then nudge fully clear of any wall we ended against
+      World.moveActor(GFX.yaw.position, {x:0,z:0}, RADIUS);
+      vault=null; }
   }
   function spawn(x,z,faceY){ vault=null; GFX.yaw.position.set(x,HEIGHT,z); GFX.yaw.rotation.y=faceY||0; GFX.pitch.rotation.x=0; }
   function heal(n){ S.player.health=Math.min(S.player.maxHealth, S.player.health+n); Events.emit('player:changed'); }
