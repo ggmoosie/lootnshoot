@@ -444,9 +444,15 @@ export const UI = (function(){
     const layout={ optic:{card:[50,8]}, barrel:{card:[84,30]}, muzzle:{card:[84,52]},
       foregrip:{card:[62,52]}, laser:{card:[38,52]}, magazine:{card:[17,52]}, stock:{card:[15,30]},
       tactical:{card:[62,52]} };
-    // available parts per slot from inventory (carried + stash)
+    // available parts per slot from the player's INVENTORY (carried rig/backpack
+    // grids + stash). Detection routes each attachment to a gunsmith slot by its
+    // EFFECT-def slot (DATA.attachments[id].slot) first, falling back to the item
+    // def slot — so a part whose two defs drifted apart (legacy data) still lands
+    // in the right slot instead of silently vanishing (the old empty-set bug).
     const avail={}; wDef.slots.forEach(s=>avail[s]=[]);
-    for(const g of [...Inventory.carried(), Inventory.stash()]) if(g) for(const t of g.items) if(t.def.type==='attachment'&&avail[t.def.slot]) avail[t.def.slot].push(t);
+    const partSlot=def=>{ const eff=DATA.attachments[def.id]; const s=(eff&&eff.slot)||def.slot; return s==='tactical'?'foregrip':s; };
+    const grids=[...Inventory.carried(), Inventory.stash()];
+    for(const g of grids){ if(!g) continue; for(const t of g.items){ if(t.def.type!=='attachment') continue; const s=partSlot(t.def); if(avail[s]) avail[s].push(t); } }
     // HTML callout cards with dropdowns
     let cards='';
     for(const sl of wDef.slots){ const L=layout[sl]; if(!L) continue;
