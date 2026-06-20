@@ -13,7 +13,10 @@ export const Minimap = (function(){
   function init(){ cv=document.getElementById('minimap'); if(cv&&cv.getContext) ctx=cv.getContext('2d'); strip=document.getElementById('compassStrip'); }
   const _fwd=new T.Vector3();
   function bearing(){ GFX.camera.getWorldDirection(_fwd); let d=Math.atan2(_fwd.x,_fwd.z)*180/Math.PI; return ((d%360)+360)%360; }
-  function compass(h){ if(!strip) return; let html=''; const px=1.7, half=170, base=Math.round(h/15)*15;
+  function compass(h){ if(!strip) return; let html=''; const px=1.7;
+    // center the strip on whatever width the (responsive) #compass actually is,
+    // so the fixed marker at left:50% always lines up with the current heading.
+    const cw=(strip.parentElement&&strip.parentElement.clientWidth)||340, half=cw/2; const base=Math.round(h/15)*15;
     const card={0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'};
     for(let d=base-90; d<=base+90; d+=15){ const dd=((d%360)+360)%360; const lab=card[dd]||dd; const x=half+(d-h)*px;
       html+=`<span class="cd ${dd%45===0?'card':''}" style="position:absolute;left:${x-30}px;width:60px">${lab}</span>`; }
