@@ -4,7 +4,7 @@
 // ammo+attachments, container grids). Also exports the item factory/serialization
 // helpers (newItem/serItem/desItem) that the whole game uses.
 import { DATA } from "./data.js";
-import { S, MODE, Events, EQUIP_SLOTS, uid } from "./state.js";
+import { S, Events, EQUIP_SLOTS, uid } from "./state.js";
 
 export class Grid {
   constructor(w,h){ this.w=w; this.h=h; this.items=[]; }
@@ -174,6 +174,23 @@ export const Inventory = (function(){
     restore(loc, item);
     Events.emit('inv:changed'); return false;
   }
+  // move into the FIRST of an ordered list of candidate grids that has room. This is
+  // the Tarkov-style fallback: try the preferred container, then the next, etc., so a
+  // full rig won't block a quick-move when the backpack still has space. Rolls back to
+  // the source if NONE of the candidates fit. Skips null/duplicate grids.
+  function quickToAny(uid, grids){
+    const loc=locate(uid); if(!loc) return false; const item=loc.item;
+    const seen=new Set(); const cands=[];
+    for(const g of (grids||[])){ if(g && !seen.has(g)){ seen.add(g); cands.push(g); } }
+    if(!cands.length) return false;
+    removeFrom(loc);
+    for(const g of cands){ if(g.add(item)===0){ Events.emit('inv:changed'); return true; } }
+    restore(loc, item);
+    Events.emit('inv:changed'); return false;
+  }
+  // Tarkov auto-sort target: ammo / meds / throwables belong in the RIG; everything
+  // else (weapons, gear, attachments, valuables, materials) belongs in the BACKPACK.
+  function rigRelevant(def){ return def && (def.type==='ammo'||def.type==='med'||def.type==='throwable'); }
   function slotFor(def){
     if(def.type==='weapon') return null; // chosen primary/secondary by caller
     // gear pieces declare their target slot explicitly (def.slot); fall back to
@@ -189,9 +206,11 @@ export const Inventory = (function(){
     removeFrom(loc);
     const prev=S.profile.equip[slot];
     S.profile.equip[slot]=item;
-    if(prev){ // put old gear back where there's room (stash in hub, carried in raid)
-      const dest = S.mode===MODE.RAID ? (carried()[0]||stash()) : stash();
-      if(dest.add(prev)!==0) stash().add(prev);
+    if(prev){ // put old gear back where there's room (stash in hub, carried in raid).
+      // Use S.run (not S.mode) so this is correct even while an overlay has flipped
+      // S.mode to MENU: stash is unreachable mid-raid, so route swaps to carried.
+      const dest = S.run ? (carried()[0]||stash()) : stash();
+      if(dest.add(prev)!==0 && dest!==stash()) stash().add(prev);
     }
     Events.emit('inv:changed'); Events.emit('equip:changed'); return true;
   }
@@ -210,7 +229,7 @@ export const Inventory = (function(){
     Events.emit('inv:changed'); Events.emit('equip:changed'); return true;
   }
   function dropOrDestroy(uid){ const loc=locate(uid); if(loc){ removeFrom(loc); Events.emit('inv:changed'); return true; } return false; }
-  function destForLoose(){ return S.mode===MODE.RAID ? (carried()[0]||stash()) : stash(); }
+  function destForLoose(){ return S.run ? (carried()[0]||stash()) : stash(); }
   // install a specific attachment onto a specific weapon's matching slot (weapon-mod screen)
   function installOn(weaponUid, attUid){
     const wl=locate(weaponUid); if(!wl||wl.item.def.type!=='weapon') return false;
@@ -272,5 +291,5 @@ export const Inventory = (function(){
     for(const p of pieces){ const it=p.it; it.inst.dura=Math.max(0, (typeof it.inst.dura==='number'?it.inst.dura:it.def.maxDura) - loss*(p.dr/drSum)); }
   }
 
-  return { Grid, carried, stash, addLoot, locate, move, quickTo, moveTo:quickTo, placeAt, setExternal, externalActor, extGrids, equip, installAttachment, installOn, removeAttachment, dropOrDestroy, sellValue, newItem, slotFor, gearStat, gearTotals, wearGear };
+  return { Grid, carried, stash, addLoot, locate, move, quickTo, quickToAny, rigRelevant, moveTo:quickTo, placeAt, setExternal, externalActor, extGrids, equip, installAttachment, installOn, removeAttachment, dropOrDestroy, sellValue, newItem, slotFor, gearStat, gearTotals, wearGear };
 })();

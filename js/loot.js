@@ -85,12 +85,15 @@ export const Loot = (function(){
     const g=new Inventory.Grid(def.grid[0],def.grid[1]);
     const n=2+Math.floor(Math.random()*3);
     for(let i=0;i<n;i++) g.add(roll(def.table));
-    const cont={ grid:g, pos:new T.Vector3(x,1,z), label:def.name, type, searched:false, mesh:m };
+    // `searched` flips true the first time it's opened; `revealed` flips true once the
+    // staggered per-item reveal has finished (so re-opening shows everything at once).
+    const cont={ grid:g, pos:new T.Vector3(x,1,z), label:def.name, type, searched:false, revealed:false, searchTime:def.search, mesh:m };
     containers.push(cont);
     const inter={ pos:cont.pos, radius:2.4, key:'interact', label:'search '+def.name.toLowerCase(),
-      action:()=>{ if(cont.searched){ UI.openLoot(cont); return; }
-        UI.toast('Searching '+def.name+'…','neu'); Audio.play('ui'); inter.busy=true;
-        setTimeout(()=>{ cont.searched=true; inter.busy=false; m.material.emissiveIntensity=0; inter.label='loot '+def.name.toLowerCase(); if(S.mode===MODE.RAID) UI.openLoot(cont); }, def.search*1000); } };
+      // Open the crate IMMEDIATELY (no upfront wait) and let the loot UI reveal each
+      // item one-by-one with its own progress bar — show-the-crate-then-fill feel.
+      action:()=>{ Audio.play('ui'); cont.searched=true; m.material.emissiveIntensity=0; inter.label='loot '+def.name.toLowerCase();
+        if(S.mode===MODE.RAID) UI.openLoot(cont); } };
     World.addInteract(inter);
   }
   function mapMarks(){ const a=[];
