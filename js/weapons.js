@@ -5,7 +5,7 @@ import { T } from "./three.js";
 import { DATA } from "./data.js";
 import { S, MODE, Clock, Events } from "./state.js";
 import { GFX } from "./gfx.js";
-import { clamp } from "./util.js";
+import { clamp, rarityColor } from "./util.js";
 import { fxTracer, FX } from "./fx.js";
 import { Audio } from "./audio.js";
 import { Progression } from "./progression.js";
@@ -53,6 +53,78 @@ export const Weapons = (function(){
       const lens=new T.Mesh(new T.CylinderGeometry(scope?.045:.03,scope?.045:.03,.04,10), new T.MeshStandardMaterial({color:scope?0x224455:0x551111,emissive:scope?0x113344:0x440808,emissiveIntensity:.6})); lens.rotation.x=Math.PI/2; lens.position.set(.22,-.08,scope?-.5:-.55); attachGroup.add(lens); }
     if(att.muzzle){ const sup=new T.Mesh(new T.CylinderGeometry(.04,.04,.2,10), dark); sup.rotation.x=Math.PI/2; sup.position.set(.22,-.17,-1.0); attachGroup.add(sup); }
     if(att.tactical){ const fg=new T.Mesh(new T.BoxGeometry(.05,.1,.06), dark); fg.position.set(.22,-.27,-.72); attachGroup.add(fg); }
+  }
+
+  // Build a standalone, CENTERED display model of a weapon item for the preview
+  // renderer (gunsmith schematic, later item-inspect). Independent of the
+  // first-person viewmodel meshes above — those are offset to the screen corner
+  // and tuned for ADS pose; this one is a clean side-profile sized to frame
+  // nicely. Procedural (receiver + barrel + magazine + stock + grip) with
+  // attachment meshes added per equipped mod, tinted by the part's rarity.
+  // Caller owns the returned Group (Preview.dispose frees its geo/materials).
+  function buildPreviewModel(item){
+    item = item || activeItem();
+    const g = new T.Group();
+    if(!item) return g;
+    const wk = item.def.weapon;
+    const long = wk==='dmr', pistol = wk==='pistol', smg = wk==='smg';
+    const barrelLen = pistol?0.34 : long?1.5 : smg?0.78 : 1.05;
+    const bodyLen   = pistol?0.34 : long?0.7  : smg?0.5  : 0.62;
+    const steel = ()=> new T.MeshStandardMaterial({color:0x2a2f34, roughness:.55, metalness:.55});
+    const dark  = ()=> new T.MeshStandardMaterial({color:0x14171a, roughness:.5,  metalness:.6});
+    // receiver (the gun's "body" box) — model centered roughly on it
+    const body = new T.Mesh(new T.BoxGeometry(bodyLen, 0.14, 0.05), steel());
+    g.add(body);
+    // barrel: a cylinder running forward (+X) out of the receiver front
+    const bx = bodyLen/2;
+    const barrel = new T.Mesh(new T.CylinderGeometry(pistol?0.022:0.026, pistol?0.022:0.026, barrelLen, 14), steel());
+    barrel.rotation.z = Math.PI/2;               // lay the cylinder along X
+    barrel.position.set(bx + barrelLen/2, pistol?0.0:0.03, 0);
+    g.add(barrel);
+    const barrelTip = bx + barrelLen;            // muzzle attaches here
+    if(!pistol){
+      // stock: extends rearward (-X) for long guns
+      const stock = new T.Mesh(new T.BoxGeometry(long?0.42:0.3, 0.12, 0.045), dark());
+      stock.position.set(-bx - (long?0.21:0.15), -0.01, 0);
+      g.add(stock);
+    }
+    // pistol grip / hand grip, angled down-back
+    const grip = new T.Mesh(new T.BoxGeometry(0.07, 0.18, 0.05), dark());
+    grip.position.set(-bodyLen*0.18, -0.14, 0);
+    grip.rotation.z = -0.28;
+    g.add(grip);
+    // magazine, hanging below the receiver
+    const mag = new T.Mesh(new T.BoxGeometry(0.07, pistol?0.14:0.2, 0.045), dark());
+    mag.position.set(pistol?-bodyLen*0.18:0.02, pistol?-0.16:-0.18, 0);
+    mag.rotation.z = pistol?-0.28:-0.08;
+    g.add(mag);
+
+    // --- equipped attachments (tinted by the part's rarity) ---
+    const att = item.inst.attachments || {};
+    const tint = id => { const d = DATA.items[id]; return rarityColor(d?d.rarity||1:1); };
+    const attMat = id => new T.MeshStandardMaterial({color:tint(id), roughness:.4, metalness:.5});
+    if(att.optic){ const scope = att.optic==='att_scope';
+      // mount rail + optic body sitting on top of the receiver
+      const mount = new T.Mesh(new T.BoxGeometry(scope?0.26:0.1, 0.04, 0.04), dark());
+      mount.position.set(0.0, 0.12, 0); g.add(mount);
+      const optic = new T.Mesh(new T.CylinderGeometry(scope?0.04:0.03, scope?0.04:0.03, scope?0.22:0.08, 14), attMat(att.optic));
+      optic.rotation.z = Math.PI/2; optic.position.set(0.0, 0.17, 0); g.add(optic);
+      // glowing lens at the rear of the optic
+      const lens = new T.Mesh(new T.CircleGeometry(scope?0.035:0.026, 16),
+        new T.MeshStandardMaterial({color:scope?0x224455:0x551111, emissive:scope?0x113344:0x440808, emissiveIntensity:.7, side:T.DoubleSide}));
+      lens.rotation.y = -Math.PI/2; lens.position.set(-(scope?0.11:0.04), 0.17, 0); g.add(lens);
+    }
+    if(att.muzzle){ // suppressor / muzzle device on the barrel tip
+      const sup = new T.Mesh(new T.CylinderGeometry(0.038, 0.038, 0.2, 14), attMat(att.muzzle));
+      sup.rotation.z = Math.PI/2; sup.position.set(barrelTip + 0.1, pistol?0.0:0.03, 0); g.add(sup);
+    }
+    if(att.tactical){ // foregrip / tac device under the barrel
+      const fg = new T.Mesh(new T.BoxGeometry(0.05, 0.12, 0.05), attMat(att.tactical));
+      fg.position.set(bx + barrelLen*0.32, -0.1, 0); fg.rotation.z = 0.12; g.add(fg);
+    }
+    // tip the whole gun slightly nose-up so the 3/4 auto-rotate reads well
+    g.rotation.y = -0.35;
+    return g;
   }
 
   function activeItem(){ return S.profile.equip[S.player.activeSlot]; }
@@ -171,5 +243,5 @@ export const Weapons = (function(){
     GFX.camera.fov += (want-GFX.camera.fov)*Math.min(1,dt*12); GFX.camera.updateProjectionMatrix();
     S.player.ads = Input.ads;
   }
-  return { buildViewmodel, stats, activeItem, switchTo, ammoInMag, reload, fire, throwGrenade, cycleMode, modeOf, update };
+  return { buildViewmodel, buildPreviewModel, stats, activeItem, switchTo, ammoInMag, reload, fire, throwGrenade, cycleMode, modeOf, update };
 })();

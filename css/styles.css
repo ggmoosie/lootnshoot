@@ -100,6 +100,9 @@
                linear-gradient(90deg,rgba(111,168,220,.05) 1px,transparent 1px) 0 0/5% 100%,
                radial-gradient(ellipse at 50% 42%,#0e1a22,#070b0f);}
   .bpsvg{position:absolute;inset:0;width:100%;height:100%;overflow:visible;}
+  /* live 3D weapon render — fills the schematic's old space inside .bpstage */
+  .gunsmith-3d{position:absolute;inset:0;width:100%;height:100%;display:block;border-radius:8px;
+    background:radial-gradient(ellipse at 50% 42%,#0e1a22,#070b0f);z-index:1;}
   .bpgun{fill:rgba(232,163,61,.08);stroke:var(--amber);stroke-width:.5;stroke-linejoin:round;}
   .bpline{stroke:rgba(111,168,220,.5);stroke-width:.4;stroke-dasharray:1.4 1.2;}
   .bpline.on{stroke:rgba(232,163,61,.7);}
