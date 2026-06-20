@@ -74,12 +74,14 @@ export function serItem(it){
   const o={id:it.def.id, qty:it.qty, x:it.x, y:it.y, rot:it.rot, inst:{}};
   if(it.def.type==='weapon'){ o.inst.ammo=it.inst.ammo||0; o.inst.attachments=it.inst.attachments||{}; }
   if(it.def.grid){ o.inst.container=it.inst.container.toJSON(); }
+  if(typeof it.def.maxDura==='number' && typeof it.inst.dura==='number') o.inst.dura=it.inst.dura; // gear wear (durability-lite)
   return o;
 }
 export function desItem(o){
   const def=DATA.items[o.id]; const inst={};
   if(def.type==='weapon'){ inst.ammo=o.inst.ammo||0; inst.attachments=o.inst.attachments||{}; }
   if(def.grid){ inst.container=o.inst&&o.inst.container?Grid.fromJSON(o.inst.container):new Grid(def.grid[0],def.grid[1]); }
+  if(typeof def.maxDura==='number') inst.dura = (o.inst&&typeof o.inst.dura==='number')?o.inst.dura:def.maxDura; // restore/seed gear wear
   return {uid:uid(), def, qty:o.qty, x:o.x, y:o.y, rot:o.rot, inst};
 }
 
@@ -140,7 +142,10 @@ export const Inventory = (function(){
   }
   function slotFor(def){
     if(def.type==='weapon') return null; // chosen primary/secondary by caller
-    return {armor:'armor', helmet:'helmet', backpack:'backpack', rig:'rig'}[def.type]||null;
+    // gear pieces declare their target slot explicitly (def.slot); fall back to
+    // a type→slot map for legacy defs that predate the gear system.
+    if(def.slot && EQUIP_SLOTS.includes(def.slot)) return def.slot;
+    return {armor:'armor', helmet:'helmet', clothing:'clothing', backpack:'backpack', rig:'rig'}[def.type]||null;
   }
   function equip(uid, weaponSlot){
     const loc=locate(uid); if(!loc) return false;
@@ -193,5 +198,45 @@ export const Inventory = (function(){
   }
   function sellValue(item){ return Math.round((item.def.value||0)*0.6*(item.qty||1)); }
 
-  return { Grid, carried, stash, addLoot, locate, move, quickTo, moveTo:quickTo, placeAt, setExternal, equip, installAttachment, installOn, removeAttachment, dropOrDestroy, sellValue, newItem };
+  // ----- gear stats (armor + clothing system) -----
+  // Normalise one equipped piece's protective stats. New gear declares dr/ac/
+  // dura/ergo directly; legacy vests/helmets only carry a numeric `armor` field,
+  // so derive a flat dr from it (armor/120, matching the old mitigation curve).
+  function gearStat(item){
+    if(!item) return null;
+    const d=item.def;
+    let dr = (typeof d.dr==='number') ? d.dr : (d.armor ? d.armor/120 : 0);
+    const inst=item.inst||{};
+    // durability-lite: a worn piece protects less. dura lives on the instance so
+    // wear persists with the item; seed it from def.maxDura on first read.
+    if(typeof d.maxDura==='number'){
+      if(typeof inst.dura!=='number') inst.dura=d.maxDura;
+      const frac = d.maxDura>0 ? Math.max(0, inst.dura)/d.maxDura : 1;
+      const f = DATA.gearMit.wornDrFactor;
+      dr *= (f + (1-f)*frac);   // dr fades from full→wornDrFactor as dura→0
+    }
+    return { dr, ac:d.ac||0, ergo:d.ergo||0, dura:inst.dura, maxDura:d.maxDura, stealth:d.stealth||0 };
+  }
+  // Aggregate protective stats across the worn gear slots. Returns flat totals
+  // used by Player (mitigation + move speed) and the UI doll readout.
+  const GEAR_SLOTS=['helmet','armor','clothing'];
+  function gearTotals(){
+    const e=S.profile?S.profile.equip:{}; let dr=0, ergo=0, ac=0, stealth=0;
+    for(const s of GEAR_SLOTS){ const g=gearStat(e[s]); if(!g) continue;
+      dr += g.dr; ergo += g.ergo; ac = Math.max(ac, g.ac); stealth += g.stealth; }
+    dr = Math.min(DATA.gearMit.drCap, dr);
+    return { dr, ergo, ac, stealth };
+  }
+  // Apply hit wear to worn gear that has durability (called by Player on damage).
+  // Splits the chip across pieces proportional to their dr contribution.
+  function wearGear(rawDmg){
+    const e=S.profile?S.profile.equip:{}; const pieces=[];
+    let drSum=0;
+    for(const s of GEAR_SLOTS){ const it=e[s]; if(it&&typeof it.def.maxDura==='number'){ const g=gearStat(it); if(g.dr>0){ pieces.push({it,dr:g.dr}); drSum+=g.dr; } } }
+    if(!pieces.length||drSum<=0) return;
+    const loss = rawDmg*DATA.gearMit.duraLossPerDmg;
+    for(const p of pieces){ const it=p.it; it.inst.dura=Math.max(0, (typeof it.inst.dura==='number'?it.inst.dura:it.def.maxDura) - loss*(p.dr/drSum)); }
+  }
+
+  return { Grid, carried, stash, addLoot, locate, move, quickTo, moveTo:quickTo, placeAt, setExternal, equip, installAttachment, installOn, removeAttachment, dropOrDestroy, sellValue, newItem, slotFor, gearStat, gearTotals, wearGear };
 })();

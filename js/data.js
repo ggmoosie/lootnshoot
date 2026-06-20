@@ -164,3 +164,67 @@ DATA.stops = {
   rareCrates(i){ return 1 + Math.floor(i/1.5); },
   rewardMult(i){ return 1 + i*0.35; },
 };
+
+// =====================================================================
+// ===== GEAR — armor + clothing system (feat/lns-armor-clothing) ======
+// =====================================================================
+// Wearable defence + utility. Three body slots: helmet, armor (plate/body),
+// clothing (jackets/fatigues — the soft layer under armor). Stats:
+//   ac    : armor class (tier 1..5) — coarse rating shown in the doll.
+//   dr    : flat damage-reduction fraction this piece contributes (0..1).
+//           Player sums dr across equipped gear (capped) — flat, no per-bone
+//           model. Simpler than the UE sim, on purpose.
+//   dura  : durability-lite. Current hit-points of protection. Each absorbed
+//           hit chips a little; as dura→0 the piece's dr fades to ~half. Cheap
+//           wear, no repair economy. Omit on a piece to make it indestructible.
+//   ergo  : ergonomics / movement modifier as a fraction of move speed
+//           (negative = heavier/slower, positive = lighter/faster). Summed by
+//           player.js into the speed calc. Keeps clothing meaningful even
+//           though it adds little armor.
+//   slot  : helmet | armor | clothing (the equip slot it occupies).
+// Placeholder art = emoji icons; real meshes can drop in later.
+DATA.gear = {
+  // --- helmets (head slot) ---
+  helm_cap:   {name:'Ball Cap',      type:'helmet',   slot:'helmet',   ac:0, dr:0.02, ergo:0.02,  size:[1,1], value:60,   rarity:1},
+  helm_lvl3:  {name:'Combat Helm III', type:'helmet', slot:'helmet',   ac:3, dr:0.16, dura:55, maxDura:55, ergo:-0.03, size:[2,2], value:900, rarity:3},
+  helm_hvy:   {name:'Heavy Helm IV', type:'helmet',   slot:'helmet',   ac:4, dr:0.24, dura:90, maxDura:90, ergo:-0.06, size:[2,2], value:1700, rarity:4},
+
+  // --- body armor / plate carriers (armor slot) ---
+  arm_soft:   {name:'Soft Armor I',  type:'armor',    slot:'armor',    ac:1, dr:0.10, dura:45,  maxDura:45,  ergo:-0.02, size:[2,3], value:300,  rarity:1},
+  arm_plate3: {name:'Plate Carrier III', type:'armor', slot:'armor',   ac:3, dr:0.30, dura:120, maxDura:120, ergo:-0.06, size:[2,3], value:1200, rarity:3},
+  arm_plate5: {name:'Assault Plate V', type:'armor',  slot:'armor',    ac:5, dr:0.45, dura:200, maxDura:200, ergo:-0.12, size:[2,4], value:2600, rarity:5},
+
+  // --- clothing (soft layer; light defence + ergonomics) ---
+  clo_tshirt: {name:'T-Shirt',       type:'clothing', slot:'clothing', ac:0, dr:0.0,  ergo:0.04,  size:[2,2], value:20,   rarity:1},
+  clo_fatigues:{name:'Field Fatigues', type:'clothing', slot:'clothing', ac:0, dr:0.03, ergo:0.0,  size:[2,2], value:140,  rarity:2},
+  clo_jacket: {name:'Tac Jacket',    type:'clothing', slot:'clothing', ac:1, dr:0.06, dura:30, maxDura:30, ergo:-0.02, size:[2,3], value:360,  rarity:3},
+  clo_ghillie:{name:'Ghillie Suit',  type:'clothing', slot:'clothing', ac:0, dr:0.02, ergo:-0.05, stealth:0.25, size:[2,3], value:700, rarity:4},
+};
+for(const k in DATA.gear){ DATA.gear[k].id=k; DATA.items[k]=DATA.gear[k]; } // merge into the item registry
+
+// gear icons (per-type fallback for the new 'clothing' type + per-id stand-ins)
+DATA.iconType.clothing = '👕';
+Object.assign(DATA.iconId, {
+  helm_cap:'🧢', helm_lvl3:'⛑️', helm_hvy:'🪖',
+  arm_soft:'🦺', arm_plate3:'🛡️', arm_plate5:'🛡️',
+  clo_tshirt:'👕', clo_fatigues:'🥋', clo_jacket:'🧥', clo_ghillie:'🍃',
+});
+
+// gear mitigation tuning — read by player.js. Kept here so balance lives in data.
+DATA.gearMit = {
+  drCap: 0.80,        // hard cap on total flat damage reduction from all gear
+  helmetWeight: 1.0,  // helmet dr counts fully now (was 0.4x of armor in the old model)
+  duraLossPerDmg: 0.5,// durability points lost per point of damage a piece absorbs
+  wornDrFactor: 0.5,  // dr multiplier when a piece is fully worn (dura=0): 1→wornDrFactor
+};
+
+// stock the vendor with entry-level gear so the system is reachable without loot
+if(Array.isArray(DATA.vendor)) DATA.vendor.push('clo_fatigues','clo_jacket','helm_lvl3','arm_soft','arm_plate3');
+
+// seed gear into world loot tables so armor/clothing drops in raids too
+if(DATA.loot){
+  if(DATA.loot.crate_common) DATA.loot.crate_common.push({id:'clo_tshirt',w:2},{id:'clo_fatigues',w:2});
+  if(DATA.loot.crate_rare)   DATA.loot.crate_rare.push({id:'helm_lvl3',w:2},{id:'arm_plate3',w:2},{id:'clo_jacket',w:2},{id:'arm_plate5',w:1},{id:'helm_hvy',w:1},{id:'clo_ghillie',w:1});
+  if(DATA.loot.cont_locker)  DATA.loot.cont_locker.push({id:'clo_fatigues',w:2},{id:'clo_jacket',w:1});
+}
+// =====================================================================

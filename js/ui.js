@@ -125,17 +125,21 @@ export const UI = (function(){
       h+=`<div class="gi r-${it.def.rarity||1}${small?' small':''}" data-uid="${it.uid}" style="left:${it.x*CELL}px;top:${it.y*CELL}px;width:${w}px;height:${hh}px"><span class="ic">${iconFor(it.def)}</span><span class="nm">${it.def.name}</span>${it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
     h+=`</div></div></div>`; return h;
   }
-  function slotHTML(s,it){ const meta={primary:['Primary','🔫'],secondary:['Sidearm','🔫'],helmet:['Helmet','⛑️'],armor:['Armor','🛡️'],rig:['Rig','🦺'],backpack:['Pack','🎒']}[s];
+  function slotHTML(s,it){ const meta={primary:['Primary','🔫'],secondary:['Sidearm','🔫'],helmet:['Helmet','⛑️'],armor:['Armor','🛡️'],clothing:['Clothing','👕'],rig:['Rig','🦺'],backpack:['Pack','🎒']}[s];
     const wide = (s==='primary'||s==='secondary');
     return `<div class="eslot ${wide?'wpn ':''}${it?'full r-'+(it.def.rarity||1):''}" style="grid-area:${s}" data-slot="${s}" ${it?`data-uid="${it.uid}"`:''}>
       <span class="ei">${it?iconFor(it.def):meta[1]}</span><span class="sn">${it&&wide?it.def.name:meta[0]}</span>${it&&it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
 
   function renderInventory(){
     gridMap={}; const e=S.profile.equip;
-    const armorVal=(e.armor?e.armor.def.armor:0)+(e.helmet?Math.round(e.helmet.def.armor*0.4):0);
+    // gear readout from the unified armor/clothing system (helmet+armor+clothing)
+    const gt=Inventory.gearTotals();
+    const drPct=Math.round(gt.dr*100);
+    const ergoPct=Math.round((gt.ergo||0)*100);
+    const ergoStr=ergoPct===0?'—':(ergoPct>0?'+'+ergoPct+'%':ergoPct+'%');
     const eq=`<div class="col gearcol"><div class="colT"><span>Loadout</span></div>
       <div class="doll">${EQUIP_SLOTS.map(s=>slotHTML(s,e[s])).join('')}<div class="dollfig" id="dollFig" aria-hidden="true"></div></div>
-      <div class="gearstats"><div><span class="gl">HEALTH</span><span class="gv">${Math.round(S.player.maxHealth)}</span></div><div><span class="gl">ARMOR</span><span class="gv">${armorVal}</span></div><div><span class="gl">WEIGHT</span><span class="gv">—</span></div></div>
+      <div class="gearstats"><div><span class="gl">HEALTH</span><span class="gv">${Math.round(S.player.maxHealth)}</span></div><div><span class="gl">ARMOR</span><span class="gv">AC${gt.ac} · ${drPct}%</span></div><div><span class="gl">MOBILITY</span><span class="gv">${ergoStr}</span></div></div>
       <div class="mini" style="margin-top:6px">Drag to equip · <b style="color:var(--amber)">R</b> rotate · <b style="color:var(--amber)">shift</b>+click quick-move · right-click menu</div></div>`;
     let cols='';
     if(e.rig){ gridMap.rig=e.rig.inst.container; cols+=gridHTML(gridMap.rig,'Rig','rig'); }
@@ -219,7 +223,7 @@ export const UI = (function(){
   // double-click: smart use/equip
   function smartUse(uid){ const loc=Inventory.locate(uid); if(!loc) return; const def=loc.item.def;
     if(def.type==='weapon') Inventory.equip(uid,'primary');
-    else if(['armor','helmet','rig','backpack'].includes(def.type)) Inventory.equip(uid);
+    else if(['armor','helmet','clothing','rig','backpack'].includes(def.type)) Inventory.equip(uid);
     else if(def.type==='med'){ Player.heal(def.heal); if(def.cure)Status.clear('bleed'); Inventory.dropOrDestroy(uid); Audio.play('ui'); }
     else if(def.type==='attachment') Inventory.installAttachment(uid);
     else if(loot) quickMove(uid);
@@ -245,7 +249,7 @@ export const UI = (function(){
     const slotEl=slotUnder(x,y);
     if(slotEl){ const slot=slotEl.dataset.slot, def=d.def;
       if(def.type==='weapon'){ if(slot==='primary'||slot==='secondary') Inventory.equip(d.uid,slot); }
-      else { const tgt={armor:'armor',helmet:'helmet',rig:'rig',backpack:'backpack'}[def.type]; if(tgt===slot) Inventory.equip(d.uid); }
+      else { if(Inventory.slotFor(def)===slot) Inventory.equip(d.uid); } // gear (armor/helmet/clothing/rig/backpack) → its own slot
       renderInventory(); refreshHUD(); return;
     }
     const gel=gridUnder(x,y);
@@ -262,7 +266,7 @@ export const UI = (function(){
   // ----- right-click context menu -----
   function showCtx(uid,x,y){ const loc=Inventory.locate(uid); if(!loc) return; const it=loc.item, def=it.def; const acts=[];
     if(def.type==='weapon'){ acts.push(['Equip Primary',()=>Inventory.equip(uid,'primary')]); acts.push(['Equip Secondary',()=>Inventory.equip(uid,'secondary')]); acts.push(['Modify weapon',()=>openMod(uid)]); }
-    else if(['armor','helmet','rig','backpack'].includes(def.type)) acts.push(['Equip',()=>Inventory.equip(uid)]);
+    else if(['armor','helmet','clothing','rig','backpack'].includes(def.type)) acts.push(['Equip',()=>Inventory.equip(uid)]);
     else if(def.type==='attachment') acts.push(['Install on weapon',()=>Inventory.installAttachment(uid)]);
     else if(def.type==='med'||def.type==='food') acts.push(['Use',()=>{ Player.heal(def.heal); if(def.cure)Status.clear('bleed'); Inventory.dropOrDestroy(uid); }]);
     else if(def.type==='deployable') acts.push(['Deploy',()=>Allies.deploy()]);
@@ -278,17 +282,26 @@ export const UI = (function(){
   addEventListener('pointerdown', ev=>{ const c=$('ctx'); if(c && c.style.display==='block' && !c.contains(ev.target)) hideCtx(); });
 
   // ----- hover tooltip -----
-  function statLines(def){
+  // item is optional; gear reads it for live durability/worn-dr. Falls back to def.
+  function statLines(def, item){
     const L=[]; if(def.type==='weapon'){ const w=DATA.weapons[def.weapon]; L.push(['Damage',w.damage],['RPM',w.rpm],['Mag',w.mag],['Modes',(w.modes||['auto']).join('/')]); }
     else if(def.type==='ammo') L.push(['Caliber',def.cal]);
-    else if(def.type==='armor'||def.type==='helmet') L.push(['Armor',def.armor]);
+    else if(def.type==='armor'||def.type==='helmet'||def.type==='clothing'){
+      // unified gear readout (armor + clothing system)
+      const g=Inventory.gearStat(item||{def, inst:{}});
+      L.push(['Class', 'AC'+(g.ac||0)]);
+      L.push(['Reduction', Math.round((g.dr||0)*100)+'%']);
+      if(typeof g.maxDura==='number'){ const cur=Math.round(typeof g.dura==='number'?g.dura:g.maxDura); L.push(['Durability', cur+'/'+g.maxDura]); }
+      if(g.ergo){ const e=Math.round(g.ergo*100); L.push(['Mobility', (e>0?'+':'')+e+'%']); }
+      if(g.stealth){ L.push(['Stealth', '+'+Math.round(g.stealth*100)+'%']); }
+    }
     else if(def.type==='med'){ L.push(['Heal',def.heal]); if(def.cure) L.push(['Cures',def.cure]); }
     else if(def.type==='throwable') L.push(['Damage',def.dmg],['Radius',def.radius+'m']);
     else if(def.type==='backpack'||def.type==='rig') L.push(['Grid',def.grid[0]+'×'+def.grid[1]]);
     L.push(['Size',def.size[0]+'×'+def.size[1]],['Value',def.value+'c']); return L;
   }
   function showTip(uid,x,y){ if(drag) return; const loc=Inventory.locate(uid); if(!loc) return; const def=loc.item.def;
-    const t=$('tip'); t.innerHTML=`<div class="tn">${def.name}</div><div class="tt">${def.type}</div>`+statLines(def).map(s=>`<div class="ts"><span>${s[0]}</span><b>${s[1]}</b></div>`).join('');
+    const t=$('tip'); t.innerHTML=`<div class="tn">${def.name}</div><div class="tt">${def.type}</div>`+statLines(def, loc.item).map(s=>`<div class="ts"><span>${s[0]}</span><b>${s[1]}</b></div>`).join('');
     t.style.left=Math.min(x+14,innerWidth-210)+'px'; t.style.top=Math.min(y+14,innerHeight-150)+'px'; t.style.display='block'; }
   function moveTip(x,y){ const t=$('tip'); if(t.style.display==='block'){ t.style.left=Math.min(x+14,innerWidth-210)+'px'; t.style.top=Math.min(y+14,innerHeight-150)+'px'; } }
   function hideTip(){ $('tip').style.display='none'; }

@@ -2,6 +2,7 @@
 // the rig transform via GFX.yaw. Reads Input + Progression-derived stats.
 import { T } from "./three.js";
 import { S, MODE, Events } from "./state.js";
+import { clamp } from "./util.js";
 import { GFX } from "./gfx.js";
 import { Progression } from "./progression.js";
 import { Status } from "./status.js";
@@ -25,9 +26,11 @@ export const Player = (function(){
   }
   function damage(n, fromPos){
     if(S.mode!==MODE.RAID) return;
-    // armor mitigation
-    const armor=(S.profile.equip.armor?S.profile.equip.armor.def.armor:0)+(S.profile.equip.helmet?S.profile.equip.helmet.def.armor*0.4:0);
-    n*=Math.max(0.25, 1-armor/120);
+    // armor + clothing mitigation: flat damage-reduction summed across worn gear
+    // (helmet/armor/clothing), capped, and faded by each piece's durability.
+    // Worn pieces then chip durability proportional to the hit they absorbed.
+    const tot=Inventory.gearTotals();
+    if(tot.dr>0){ Inventory.wearGear(n); n*=(1-tot.dr); }
     S.player.health-=n; vig=0.4; document.getElementById('vig').style.opacity='0.9';
     if(fromPos){ const camA=GFX.yaw.rotation.y; const srcA=Math.atan2(fromPos.x-GFX.yaw.position.x, fromPos.z-GFX.yaw.position.z); UI.dmgDir(srcA-camA); }
     if(Math.random()<0.22) Status.apply('bleed', 8, 2);
@@ -38,7 +41,10 @@ export const Player = (function(){
     if(S.mode!==MODE.RAID && S.mode!==MODE.HUB) return;
     const crouch = !!Input.crouch;
     const sprint = !crouch && Input.down('sprint') && S.player.stamina>1;
-    const speed = BASE*Progression.moveMult()*Status.speedMult()*(crouch?0.5:sprint?SPRINT:1);
+    // gear ergonomics: worn armor/clothing nudge move speed (heavier plate = slower,
+    // light clothing = faster). Clamped so a full plate kit never freezes you.
+    const ergoMult = clamp(1 + (Inventory.gearTotals().ergo||0), 0.6, 1.25);
+    const speed = BASE*Progression.moveMult()*Status.speedMult()*ergoMult*(crouch?0.5:sprint?SPRINT:1);
     const fwdV=new T.Vector3(Math.sin(GFX.yaw.rotation.y),0,Math.cos(GFX.yaw.rotation.y));
     const rightV=new T.Vector3(fwdV.z,0,-fwdV.x);
     let f=0,s=0;

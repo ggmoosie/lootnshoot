@@ -12,7 +12,7 @@ export const Save = (function(){
     const p={
       credits:1200, level:1, xp:0, skillPoints:0,
       skills:{vitality:0, athletics:0, marksman:0, engineer:0},
-      equip:{primary:null, secondary:null, helmet:null, armor:null, rig:null, backpack:null},
+      equip:{primary:null, secondary:null, helmet:null, armor:null, clothing:null, rig:null, backpack:null},
       stash:new Grid(10,16),
       settings:{ sens:1, invertY:false, fov:78, binds:Object.assign({},DATA.binds) },
     };
