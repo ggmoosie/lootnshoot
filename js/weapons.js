@@ -196,26 +196,148 @@ export const Weapons = (function(){
   function switchTo(slot){ if(!S.profile.equip[slot]) return; S.player.activeSlot=slot; reloading=false; Audio.play('equip'); Events.emit('weapon:changed'); }
   function ammoInMag(){ const it=activeItem(); return it?(it.inst.ammo||0):0; }
 
+  // ===========================================================================
+  // AMMO TYPES + MAGAZINE FEED  (feat/lns-ammo-mags)
+  // ---------------------------------------------------------------------------
+  // The active weapon's instance carries `inst.ammoType` = the id of the loaded
+  // round (a key of DATA.ammoTypes). Reload draws THAT type's stack from the
+  // player's carried inventory (read-only Grid access); the loaded type modifies
+  // every shot (damage / recoil / range + armor penetration). Switching ammo
+  // types picks any caliber-matching type the player is carrying.
+  //
+  // inst.ammo (the integer mag count the HUD reads) stays the source of truth —
+  // we never restructure it. ammoType is per-instance runtime state; if a weapon
+  // has none yet it defaults to the caliber's FMJ baseline.
+  // ===========================================================================
+
+  // the ammo type currently loaded in `it` (defaults to the caliber's FMJ).
+  function loadedTypeId(it){
+    it = it || activeItem(); if(!it) return null;
+    const cal = DATA.weapons[it.def.weapon].cal;
+    let id = it.inst.ammoType;
+    if(!id || !DATA.ammoTypes[id] || DATA.ammoTypes[id].cal!==cal){
+      id = (DATA.ammoDefault && DATA.ammoDefault[cal]) || null;
+      it.inst.ammoType = id;
+    }
+    return id;
+  }
+  function loadedType(it){ const id=loadedTypeId(it); return id?DATA.ammoTypes[id]:null; }
+
+  // count rounds of a specific ammo item id across the player's carried grids
+  // (rig + backpack). Read-only — never mutates the Grid.
+  function reserveOfItem(itemId){
+    let n=0; for(const g of Inventory.carried()) n += g.count(itemId); return n;
+  }
+  // pull up to `want` rounds of `itemId` from carried grids (read-only API of the
+  // Grid: count/consume). Returns how many were actually taken. Grids are owned by
+  // inventory.js; we only call its public consume() — we don't touch its internals.
+  function drawFromInventory(itemId, want){
+    let got=0;
+    for(const g of Inventory.carried()){
+      if(got>=want) break;
+      const have=g.count(itemId); if(have<=0) continue;
+      const take=Math.min(have, want-got);
+      if(g.consume(itemId, take)) got+=take;
+    }
+    return got;
+  }
+  // all ammo types (DATA.ammoTypes ids) the gun can chamber AND the player has at
+  // least one round of in carried inventory. Always includes the currently loaded
+  // type (even at zero reserve) so switching can land back on it.
+  function availableTypes(it){
+    it = it || activeItem(); if(!it) return [];
+    const cal = DATA.weapons[it.def.weapon].cal;
+    const cur = loadedTypeId(it);
+    const out = [];
+    for(const id in DATA.ammoTypes){ const t=DATA.ammoTypes[id]; if(t.cal!==cal) continue;
+      if(id===cur || reserveOfItem(t.item)>0) out.push(id); }
+    return out;
+  }
+  // total reserve (rounds in inventory) of the currently loaded type — handy for HUD/tooltips
+  function reserveOf(it){ const t=loadedType(it); return t?reserveOfItem(t.item):0; }
+
+  // switch the loaded ammo type to `id` (a DATA.ammoTypes key). If the mag held a
+  // different type with rounds still in it, those rounds are returned to inventory
+  // so you never duplicate or vaporise ammo, then the mag empties — a fresh reload
+  // chambers the new type. No-op if the type is already loaded or not chamberable.
+  function setAmmo(id){
+    const it=activeItem(); if(!it) return false;
+    const t=DATA.ammoTypes[id]; if(!t) return false;
+    const cal=DATA.weapons[it.def.weapon].cal; if(t.cal!==cal) return false;
+    if(loadedTypeId(it)===id) return false;
+    // return the old loaded rounds to inventory (best-effort; drop if no room)
+    const old=loadedType(it); const inMag=it.inst.ammo||0;
+    if(old && inMag>0){ const back=Inventory.newItem(old.item, inMag); if(back) Inventory.addLoot(back); }
+    it.inst.ammo=0; it.inst.ammoType=id;
+    Audio.play('ui'); UI.toast('Ammo: '+t.label+(reserveOfItem(t.item)>0?'':' (none — reload)'),'neu');
+    Events.emit('weapon:changed'); Events.emit('inv:changed');
+    return true;
+  }
+  // cycle to the next caliber-matching ammo type the player is carrying.
+  function cycleAmmo(){
+    const it=activeItem(); if(!it) return;
+    const types=availableTypes(it);
+    if(types.length<2){ const t=loadedType(it); UI.toast((t?t.label:'AMMO')+' only — no other rounds','neu'); return; }
+    const cur=loadedTypeId(it); const i=types.indexOf(cur);
+    setAmmo(types[(i+1)%types.length]);
+  }
+
   function reload(){
     const it=activeItem(); if(!it) return; const st=stats(it);
     if(reloading || it.inst.ammo>=st.mag) return;
-    // ammo is unlimited in this build — you just have to reload the mag
+    const t=loadedType(it);
+    // must have rounds of the loaded type in inventory to top up the mag
+    if(t && reserveOfItem(t.item)<=0){
+      // try to auto-swap to a type we DO have for this caliber before giving up
+      const alt=availableTypes(it).find(id=>id!==loadedTypeId(it) && reserveOfItem(DATA.ammoTypes[id].item)>0);
+      if(alt){ setAmmo(alt); }
+      else { UI.toast('No '+(t?t.label:'')+' ammo','neg'); Audio.play('ui'); return; }
+    }
     reloading=true; reloadEnd=Clock.now + st.reload*Progression.reloadMult(); UI.flashReload('RELOADING…');
   }
   function finishReload(){
     const it=activeItem(); const st=stats(it);
-    it.inst.ammo=st.mag; reloading=false; UI.flashReload(''); Audio.play('reload'); Events.emit('weapon:changed');
+    const t=loadedType(it);
+    const need=Math.max(0, st.mag - (it.inst.ammo||0));
+    if(t && need>0){
+      const got=drawFromInventory(t.item, need);
+      it.inst.ammo=(it.inst.ammo||0)+got;
+      if(got>0) Events.emit('inv:changed');
+    } else if(!t){
+      it.inst.ammo=st.mag;   // no ammo-type data (shouldn't happen) -> legacy free top-up
+    }
+    reloading=false; UI.flashReload(''); Audio.play('reload'); Events.emit('weapon:changed');
+  }
+
+  // armor mitigation against an enemy, modulated by the round's penetration.
+  // Enemies carry kit.armor / kit.helmet item ids (or null) from Enemies.rollKit.
+  // We read the SAME flat damage-reduction the gear system uses (Inventory.gearStat
+  // on a throwaway item wrapper), then penetration cancels a fraction of it:
+  //   effectiveDr = dr * (1 - pen). headshots hit the helmet dr, body the armor dr.
+  // pen=1 (pure AP) ignores armor; pen=0 (pure HP) eats the full reduction. This is
+  // exactly the dr model already mitigating PLAYER damage — applied to enemies.
+  function armorMult(e, head, pen){
+    if(!e || !e.kit) return 1;
+    const id = head ? e.kit.helmet : e.kit.armor;
+    if(!id) return 1;
+    const def = DATA.items[id]; if(!def) return 1;
+    let dr = (typeof def.dr==='number') ? def.dr : (def.armor ? def.armor/120 : 0);
+    if(dr<=0) return 1;
+    const effDr = clamp(dr*(1-clamp(pen!=null?pen:0, 0, 1)), 0, 0.95);
+    return 1-effDr;
   }
 
   function fire(){
     if(reloading) return false; const it=activeItem(); if(!it) return false; const st=stats(it);
     if(it.inst.ammo<=0){ reload(); return false; }
+    // active ammo type modifies the shot (damage / pen / range / recoil / tracer)
+    const at = loadedType(it) || { dmg:1, pen:0.3, range:1, recoil:1, tracer:false, color:0xffd27a };
     const interval=60/st.rpm;
     if(Clock.now-lastShot<interval) return false;
     lastShot=Clock.now; it.inst.ammo--;
     const suppressed = !!(it.inst.attachments && Object.keys(it.inst.attachments).some(s=>{ const a=DATA.attachments[it.inst.attachments[s]]; return a&&a.quiet; }));
     muzzle.material.opacity=1; muzzle.material.rotation=Math.random()*Math.PI;
-    const kick=st.recoil*(S.player.ads?0.55:1);
+    const kick=st.recoil*(at.recoil||1)*(S.player.ads?0.55:1);
     GFX.pitch.rotation.x=clamp(GFX.pitch.rotation.x+kick,-1.5,1.5); recoilDebt+=kick;
     GFX.yaw.rotation.y += (Math.random()-0.5)*kick*0.5;
     // spread
@@ -224,16 +346,21 @@ export const Weapons = (function(){
     dir.x+=(Math.random()*2-1)*spread; dir.y+=(Math.random()*2-1)*spread; dir.z+=(Math.random()*2-1)*spread; dir.normalize();
     const org=new T.Vector3(); GFX.camera.getWorldPosition(org);
     Perception.shot(org, suppressed); Audio.play(suppressed?'shotSupp':'shot');
-    ray.set(org,dir); ray.far=st.range;
+    // round range/velocity scales the hitscan reach + falloff window
+    const rngMult = at.range||1;
+    const range = st.range*rngMult, eff = (st.eff||st.range*0.6)*rngMult;
+    ray.set(org,dir); ray.far=range;
     const targets=[...World.solids, ...Enemies.hitMeshes()];
     const hits=ray.intersectObjects(targets,false);
-    const endPt = hits.length ? hits[0].point : org.clone().addScaledVector(dir, st.range);
+    const endPt = hits.length ? hits[0].point : org.clone().addScaledVector(dir, range);
     const muzzlePt = org.clone().addScaledVector(dir, 0.6); muzzlePt.y-=0.12;
-    spawnTracer(muzzlePt, endPt);
+    // tracer: tinted by the round; tracer rounds glow noticeably brighter/longer
+    fxTracer(muzzlePt, endPt, at.color||0xffd27a);
     if(hits.length){ const o=hits[0].object; const e=o.userData.enemy;
-      if(e&&!e.dead){ const head=o.userData.part==='head'; const d=hits[0].distance; const eff=st.eff||st.range*0.6;
-        const fo = d<=eff?1:clamp(1-(d-eff)/((st.range-eff)||1)*0.62, 0.38, 1);
-        Enemies.damage(e, st.damage*(head?2.2:1)*fo); UI.hit(head, e.dead); FX.impact(hits[0].point, 0xcc3322); }
+      if(e&&!e.dead){ const head=o.userData.part==='head'; const d=hits[0].distance;
+        const fo = d<=eff?1:clamp(1-(d-eff)/((range-eff)||1)*0.62, 0.38, 1);
+        const dmg = st.damage*(at.dmg||1)*(head?2.2:1)*fo*armorMult(e, head, at.pen);
+        Enemies.damage(e, dmg); UI.hit(head, e.dead); FX.impact(hits[0].point, 0xcc3322); }
       else FX.impact(hits[0].point, 0xc8c0ac); }
     ray.far=Infinity;
     Events.emit('weapon:changed');
@@ -259,6 +386,14 @@ export const Weapons = (function(){
     if(S.mode!==MODE.RAID) return;
     const code = (Input.code && Input.code('melee')) || (DATA.binds && DATA.binds.melee);
     if(e.code===code && !e.repeat) meleeWanted=true;
+  });
+  // ammo-type switch: cycles the loaded round through caliber-matching types the
+  // player carries. Wired here (input.js is owned by another agent this round) —
+  // honors a rebindable 'ammotype' bind if one exists, else defaults to KeyX.
+  addEventListener('keydown', e=>{
+    if(S.mode!==MODE.RAID) return;
+    const code = (Input.code && Input.code('ammotype')) || (DATA.binds && DATA.binds.ammotype) || 'KeyX';
+    if(e.code===code && !e.repeat) cycleAmmo();
   });
   function canMelee(){ return S.mode===MODE.RAID && (Clock.now-lastMelee)>=DATA.melee.cooldown && S.player.stamina>=DATA.melee.minStamina; }
   function melee(){
@@ -352,5 +487,7 @@ export const Weapons = (function(){
     GFX.camera.fov += (want-GFX.camera.fov)*Math.min(1,dt*12); GFX.camera.updateProjectionMatrix();
     S.player.ads = Input.ads;
   }
-  return { buildViewmodel, buildPreviewModel, stats, activeItem, switchTo, ammoInMag, reload, fire, throwGrenade, cycleMode, modeOf, melee, canMelee, update };
+  return { buildViewmodel, buildPreviewModel, stats, activeItem, switchTo, ammoInMag, reload, fire, throwGrenade, cycleMode, modeOf, melee, canMelee, update,
+    // ammo-type / magazine-feed API (feat/lns-ammo-mags)
+    loadedType, loadedTypeId, availableTypes, reserveOf, setAmmo, cycleAmmo };
 })();
