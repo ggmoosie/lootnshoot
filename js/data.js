@@ -557,3 +557,74 @@ DATA.raidLayouts = [
   { id:'lot',     weight:i=>1.0 },
   { id:'streets', weight:i=>1.0 },
 ];
+/* ============================================================================
+   SECTION: ENEMY AI — GRENADES + SUPPRESSION  (added by feat/lns-ai-grenades)
+   Self-contained tuning block — appended via Object.assign / push so it never
+   collides with the literals above (parallel agents auto-merge). PURE DATA, no
+   behavior. Owns: per-role grenade loadout (who carries frags + how many), the
+   enemy throw decision/arc/telegraph knobs (projectiles.js + enemies.js read
+   these), the suppression model (near-miss pin + accuracy bleed), and the
+   post-kill regroup/search timing. Tuned to feel like Tarkov-Hunt extraction —
+   readable telegraphs, deliberately simpler than the UE sim.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+// --- per-ROLE grenade loadout. Merged onto DATA.enemies[role].nades. `count`=how
+//     many frags the role spawns carrying; `chance`=odds this individual actually
+//     rolled any this spawn (so not every guard chucks nades). Roles absent here
+//     carry none. Heavies/rushers lean grenade-happy to flush campers; snipers
+//     never bother. Keeps the role taxonomy above intact (additive). ---
+DATA.enemyNades = {
+  guard:    { count:1, chance:0.45 },
+  patroller:{ count:1, chance:0.20 },
+  lookout:  { count:1, chance:0.30 },
+  rusher:   { count:2, chance:0.55 },
+  heavy:    { count:2, chance:0.70 },
+  // sniper: none (long-range role; would never close to throwing distance)
+};
+for(const r in DATA.enemyNades){ if(DATA.enemies[r]) DATA.enemies[r].nades=DATA.enemyNades[r]; }
+
+// --- enemy GRENADE throw behaviour. All times in seconds, distances in metres.
+//     enemies.js decides WHEN (los-denied / grouped-on-a-camper), projectiles.js
+//     does the arc + telegraph + detonation (reuses the frag effect). ---
+DATA.enemyGrenade = {
+  // throwing envelope: too close = self-frag risk, too far = won't reach.
+  minRange: 8,            // don't throw if the target is basically point-blank
+  maxRange: 34,           // out of arm range past this
+  // decision gates
+  losDeniedFor: 1.4,      // sec the target must be UNSEEN-but-known before flushing with a frag
+  groupedMin: 2,          // this many+ engaged enemies on one held/cover target -> someone may cook one
+  cooldown: 9,            // per-enemy seconds between throws (squad feels deliberate, not spammy)
+  squadCooldown: 4.5,     // squad-wide floor so 4 mobs don't all throw the same instant
+  aimError: 2.2,          // metres of scatter added to the aimpoint (frags miss-by-a-bit, fair)
+  leadFactor: 0.35,       // fraction of the player's velocity to lead the throw by
+  // telegraph: a clear windup so the player can react (callout + cook delay + marker)
+  cookTime: 1.15,         // sec from "decided to throw" to release (the windup/telegraph)
+  arcSpeed: 17,           // horizontal toss speed fed to the ballistic solve
+  markerColor: 0xff5a1f,  // landing-zone telegraph ring tint (matches frag pop hue)
+};
+
+// --- SUPPRESSION model. Incoming near-miss fire (player tracers that whip past
+//     without hitting) + nearby blasts build a 0..1 suppression meter per enemy.
+//     While suppressed an enemy shoots worse and is pinned (forced low in cover,
+//     no peeking). Decays when fire lets up. enemies.js owns the meter. ---
+DATA.suppression = {
+  missRadius: 2.6,        // a player tracer passing within this of an enemy = a near-miss
+  perMiss: 0.34,          // suppression added per near-miss round
+  perBlast: 0.6,          // suppression added when a frag goes off near them
+  decay: 0.55,            // suppression bled off per second once fire stops
+  max: 1.0,               // ceiling
+  pinAt: 0.5,             // at/above this the enemy is PINNED (hugs cover, can't peek)
+  accuracyFloor: 0.35,    // accuracy is scaled down to at most this fraction at full suppression
+  fireDelayMult: 1.8,     // fire cadence stretched by up to this at full suppression
+};
+
+// --- POST-KILL squad reaction: when a squadmate drops, survivors don't just stand
+//     there — they regroup toward the kill and SEARCH the player's last-known spot
+//     for a while before giving up. enemies.js reads these. ---
+DATA.squadReact = {
+  searchTime: 7.5,        // sec survivors hunt the last-known position after a teammate dies
+  searchRadius: 9,        // they fan out within this of the last-known point
+  regroupRadius: 26,      // a death rallies living mobs within this range
+  alertOnKill: 30,        // radius of the alert pulse a teammate's death sends out
+};
+// =====================================================================

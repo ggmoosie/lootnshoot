@@ -23,7 +23,7 @@ Index of every top-level exported symbol in `js/*.js`, grouped by file.
 
 ## js/enemies.js
 
-- `Enemies` (const) — js/enemies.js:22
+- `Enemies` (const) — js/enemies.js:23
 
 ## js/fx.js
 
