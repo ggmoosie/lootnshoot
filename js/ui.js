@@ -21,6 +21,7 @@ import { Loot } from "./loot.js";
 import { Audio } from "./audio.js";
 import { Raid } from "./raid.js";
 import { createPreview } from "./preview.js";
+import { buildMannequin } from "./mannequin.js";
 
 export const UI = (function(){
   const $=id=>document.getElementById(id);
@@ -56,7 +57,7 @@ export const UI = (function(){
   // ---------- overlay helpers ----------
   const OVS=['ovStart','ovInv','ovVendor','ovCraft','ovSkill','ovExtract','ovResult','ovPause','ovSettings','ovMod'];
   function hideAll(){ OVS.forEach(o=>$(o).classList.remove('show')); }
-  function closeMenus(){ hideAll(); hideCtx(); loot=null; Inventory.setExternal(null); disposeGunPreview();
+  function closeMenus(){ hideAll(); hideCtx(); loot=null; Inventory.setExternal(null); disposeGunPreview(); disposeMannequin();
     if(S.mode===MODE.MENU){ const pm=prevMode; S.setMode(pm);
       if(pm===MODE.PAUSE){ $('ovPause').classList.add('show'); }
       else if(pm===MODE.BOOT){ $('ovStart').classList.add('show'); }
@@ -113,7 +114,7 @@ export const UI = (function(){
     gridMap={}; const e=S.profile.equip;
     const armorVal=(e.armor?e.armor.def.armor:0)+(e.helmet?Math.round(e.helmet.def.armor*0.4):0);
     const eq=`<div class="col gearcol"><div class="colT"><span>Loadout</span></div>
-      <div class="doll">${EQUIP_SLOTS.map(s=>slotHTML(s,e[s])).join('')}<div class="dollfig" aria-hidden="true"><span>🧍</span></div></div>
+      <div class="doll">${EQUIP_SLOTS.map(s=>slotHTML(s,e[s])).join('')}<div class="dollfig" id="dollFig" aria-hidden="true"></div></div>
       <div class="gearstats"><div><span class="gl">HEALTH</span><span class="gv">${Math.round(S.player.maxHealth)}</span></div><div><span class="gl">ARMOR</span><span class="gv">${armorVal}</span></div><div><span class="gl">WEIGHT</span><span class="gv">—</span></div></div>
       <div class="mini" style="margin-top:6px">Drag to equip · <b style="color:var(--amber)">R</b> rotate · <b style="color:var(--amber)">shift</b>+click quick-move · right-click menu</div></div>`;
     let cols='';
@@ -143,8 +144,39 @@ export const UI = (function(){
       if(el.dataset.uid){ el.addEventListener('pointerdown', startDrag);
         el.addEventListener('contextmenu', ev=>{ ev.preventDefault(); showCtx(el.dataset.uid*1, ev.clientX, ev.clientY); }); }
     });
+    mountMannequin();
     hideCtx();
     if(loot && loot.cmesh) Loot.reflectCorpse(loot);
+  }
+
+  // ----- inventory paper-doll 3D mannequin -----
+  // A rotating procedural humanoid in the .dollfig cell, reflecting equipped gear.
+  // Like the gunsmith render, the canvas + its WebGLRenderer are created ONCE per
+  // inventory open and survive renderInventory's innerHTML rebuilds (we re-parent
+  // the persistent canvas back into the fresh #dollFig and just rebuild the model
+  // to reflect the new loadout). Disposed in closeMenus → no leaked renderer/RAF.
+  let manPrev=null, manCanvas=null;
+  function disposeMannequin(){
+    if(manPrev){ manPrev.dispose(); manPrev=null; }
+    if(manCanvas && manCanvas.parentNode) manCanvas.parentNode.removeChild(manCanvas);
+    manCanvas=null;
+  }
+  function refreshMannequin(){
+    if(!manPrev || !S.profile) return;
+    manPrev.setModel(buildMannequin(S.profile.equip));
+  }
+  function mountMannequin(){
+    const fig=$('dollFig'); if(!fig) return;
+    if(!manCanvas){
+      manCanvas=document.createElement('canvas'); manCanvas.className='doll-3d';
+      fig.appendChild(manCanvas);
+      manPrev=createPreview(manCanvas, { autoRotate:true, rotateSpeed:0.5, fov:38, fitOffset:1.25 });
+      manPrev.start();
+    } else {
+      fig.appendChild(manCanvas);
+      manPrev.resize();
+    }
+    refreshMannequin();
   }
   function takeAll(){ if(!loot) return; for(const it of [...loot.grid.items]) Inventory.quickTo(it.uid, Inventory.carried()[0]||Inventory.stash()); renderInventory(); refreshHUD(); }
 

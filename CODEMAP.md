@@ -59,6 +59,10 @@ Index of every top-level exported symbol in `js/*.js`, grouped by file.
 
 _no top-level exports_
 
+## js/mannequin.js
+
+- `buildMannequin` (function) — js/mannequin.js:33 — buildMannequin(equip) -> THREE.Group, centered near origin, facing +Z. equip is S.profile.equip (slots: helmet, armor, rig, backpack, primary, secondary). Any/all slots may be empty — the base body always renders so an unarmored, unarmed character still shows.
+
 ## js/minimap.js
 
 - `Minimap` (const) — js/minimap.js:11
@@ -119,7 +123,7 @@ _no top-level exports_
 
 ## js/ui.js
 
-- `UI` (const) — js/ui.js:25
+- `UI` (const) — js/ui.js:26
 
 ## js/util.js
 
