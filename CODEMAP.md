@@ -45,9 +45,9 @@ Index of every top-level exported symbol in `js/*.js`, grouped by file.
 ## js/inventory.js
 
 - `defaultInst` (function) — js/inventory.js:64
-- `desItem` (function) — js/inventory.js:79
+- `desItem` (function) — js/inventory.js:80
 - `Grid` (class) — js/inventory.js:9
-- `Inventory` (const) — js/inventory.js:86
+- `Inventory` (const) — js/inventory.js:88
 - `newItem` (function) — js/inventory.js:69
 - `serItem` (function) — js/inventory.js:73
 
@@ -77,7 +77,7 @@ _no top-level exports_
 
 ## js/player.js
 
-- `Player` (const) — js/player.js:16
+- `Player` (const) — js/player.js:17
 
 ## js/preview.js
 
@@ -101,12 +101,12 @@ _no top-level exports_
 
 ## js/state.js
 
-- `Clock` (const) — js/state.js:36 — global frame clock — Clock.now is wall-time seconds, advanced by the main loop.
-- `EQUIP_SLOTS` (const) — js/state.js:33 — equipment slots (order = doll layout + serialization order)
+- `Clock` (const) — js/state.js:37 — global frame clock — Clock.now is wall-time seconds, advanced by the main loop.
+- `EQUIP_SLOTS` (const) — js/state.js:34 — equipment slots (order = doll layout + serialization order) (clothing = soft wearable layer; part of the armor/clothing gear system)
 - `Events` (const) — js/state.js:9
 - `MODE` (const) — js/state.js:23
 - `S` (const) — js/state.js:24
-- `uid` (const) — js/state.js:40
+- `uid` (const) — js/state.js:41
 
 ## js/status.js
 
