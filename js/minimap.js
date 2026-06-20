@@ -22,9 +22,16 @@ export const Minimap = (function(){
       html+=`<span class="cd ${dd%45===0?'card':''}" style="position:absolute;left:${x-30}px;width:60px">${lab}</span>`; }
     strip.innerHTML=html;
   }
+  let wrap;
   function update(dt){
     if(!ctx) init(); if(!ctx) return;
-    if(S.mode!==MODE.RAID){ ctx.clearRect(0,0,180,180); if(strip) strip.innerHTML=''; return; }
+    if(!wrap) wrap=document.getElementById('mapwrap');
+    // the radar is raid-only; hide the empty box (and compass) in the safehouse so
+    // the HUD reads clean instead of showing a black void where the map will be.
+    const inRaid=S.mode===MODE.RAID;
+    if(wrap) wrap.style.display=inRaid?'':'none';
+    const comp=document.getElementById('compass'); if(comp) comp.style.visibility=inRaid?'':'hidden';
+    if(!inRaid){ ctx.clearRect(0,0,180,180); if(strip) strip.innerHTML=''; return; }
     acc+=dt; if(acc<0.08) return; acc=0;
     const info=World.mapInfo(), p=GFX.yaw.position, R=56, S2=88/R, cx=90, cy=90;
     const tx=wx=>cx+(wx-p.x)*S2, ty=wz=>cy-(wz-p.z)*S2;
