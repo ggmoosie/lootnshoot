@@ -18,7 +18,40 @@ import { Raid } from "./raid.js";
 export const Player = (function(){
   const RADIUS=0.45, HEIGHT=1.7, BASE=6.2, SPRINT=1.6, JUMP=4.6, GRAV=15;
   let vig=0, stepT=0, velY=0, jumpY=0, grounded=true, movingFlag=false, eyeCur=HEIGHT;
-  function spawn(x,z,faceY){ GFX.yaw.position.set(x,HEIGHT,z); GFX.yaw.rotation.y=faceY||0; GFX.pitch.rotation.x=0; }
+  // ---- vault / climb (placeholder traversal) -------------------------------
+  // A short scripted slide that carries the player OVER a low obstacle (vault) or
+  // UP-and-over a chest/head-high ledge (climb). Player Y is fixed-eye, so the
+  // "animation" is a cosmetic eye-height arc (rise then settle) + a small forward
+  // pitch dip — a clean placeholder for a real clamber anim. While a vault runs,
+  // normal WASD/jump/collision are suspended and the body lerps from start→land.
+  // Trigger = JUMP key while moving into a surmountable face (no rebind needed;
+  // a plain hop still happens when there's nothing to vault). jumpLatch debounces
+  // the key so one press = one traversal.
+  let vault=null, jumpLatch=false;
+  function inVault(){ return !!vault; }
+  function startVault(plan){
+    const p=GFX.yaw.position;
+    vault={ t:0, dur:plan.dur||0.45, type:plan.type,
+            sx:p.x, sz:p.z, lx:plan.land.x, lz:plan.land.z,
+            peak:(plan.type==='climb'?0.85:0.5)+ (plan.rise||1)*0.15 };  // eye-arc height
+    Audio.play('ui');
+  }
+  function tickVault(dt){
+    vault.t+=dt; const k=Math.min(1, vault.t/vault.dur);
+    const ease=k<0.5 ? 2*k*k : 1-Math.pow(-2*k+2,2)/2;            // easeInOutQuad
+    const p=GFX.yaw.position;
+    p.x=vault.sx+(vault.lx-vault.sx)*ease;
+    p.z=vault.sz+(vault.lz-vault.sz)*ease;
+    // cosmetic clamber arc: eye rises over the lip then settles to stand height
+    const arc=Math.sin(k*Math.PI)*vault.peak;
+    GFX.yaw.position.y=HEIGHT+arc*(vault.type==='climb'?0.7:0.45);
+    eyeCur=HEIGHT;                                                 // keep the base eye in sync for after
+    // a brief downward pitch nudge so the camera "looks at the lip" mid-clamber
+    const dip=Math.sin(k*Math.PI)*0.18;
+    GFX.pitch.rotation.x=clamp(GFX.pitch.rotation.x*(1-dt*6) - dip*dt*6, -1.5, 1.5);
+    if(k>=1){ jumpY=0; velY=0; grounded=true; GFX.yaw.position.y=HEIGHT; vault=null; }
+  }
+  function spawn(x,z,faceY){ vault=null; GFX.yaw.position.set(x,HEIGHT,z); GFX.yaw.rotation.y=faceY||0; GFX.pitch.rotation.x=0; }
   function heal(n){ S.player.health=Math.min(S.player.maxHealth, S.player.health+n); Events.emit('player:changed'); }
 
   // ---- simplified healing + buff consumables (added: feat/lns-throwables-healing)
@@ -65,6 +98,8 @@ export const Player = (function(){
   }
   function update(dt){
     if(S.mode!==MODE.RAID && S.mode!==MODE.HUB) return;
+    // an in-progress vault/climb owns the body — suspend normal movement until done
+    if(vault){ tickVault(dt); if(!Input.down('jump')) jumpLatch=false; Events.emit('player:tick'); return; }
     const crouch = !!Input.crouch;
     const sprint = !crouch && Input.down('sprint') && S.player.stamina>1;
     // gear ergonomics: worn armor/clothing nudge move speed (heavier plate = slower,
@@ -79,9 +114,20 @@ export const Player = (function(){
     const mv=new T.Vector3().addScaledVector(fwdV,f).addScaledVector(rightV,s);
     const moving=mv.lengthSq()>0.0004; movingFlag=moving;
     if(moving){ if(mv.lengthSq()>1) mv.normalize(); mv.multiplyScalar(speed*dt*(S.player.ads?0.55:1)); World.moveActor(GFX.yaw.position, mv, RADIUS); }
-    // jump + gravity (vertical only; XZ collision is 2D)
+    // jump + gravity (vertical only; XZ collision is 2D). The jump key is context-
+    // sensitive: pressed while moving INTO a surmountable obstacle it VAULTS/CLIMBS
+    // instead of a plain hop. jumpLatch makes one press = one action.
     const eye = HEIGHT*(crouch?0.72:1);
-    if(grounded && !crouch && Input.down('jump') && (S.mode===MODE.RAID||S.mode===MODE.HUB)){ velY=JUMP; grounded=false; Audio.play('ui'); }
+    const jumpHeld = Input.down('jump');
+    if(grounded && !crouch && jumpHeld && !jumpLatch && (S.mode===MODE.RAID||S.mode===MODE.HUB)){
+      jumpLatch=true;
+      // probe in the direction the player is heading (movement if moving, else facing)
+      const dir = moving ? mv : fwdV;
+      const plan = World.vaultProbe(GFX.yaw.position, {x:dir.x,z:dir.z}, RADIUS);
+      if(plan){ startVault(plan); Events.emit('player:tick'); return; }   // vault this frame
+      velY=JUMP; grounded=false; Audio.play('ui');                        // nothing to vault → hop
+    }
+    if(!jumpHeld) jumpLatch=false;
     if(!grounded){ velY-=GRAV*dt; jumpY+=velY*dt; if(jumpY<=0){ jumpY=0; velY=0; grounded=true; } }
     eyeCur += (eye-eyeCur)*Math.min(1,dt*12);
     GFX.yaw.position.y = eyeCur + jumpY;
@@ -98,6 +144,6 @@ export const Player = (function(){
     if(vig>0){ vig-=dt; if(vig<=0) document.getElementById('vig').style.opacity='0'; }
     Events.emit('player:tick');
   }
-  function resetForRaid(){ S.player.health=S.player.maxHealth; S.player.stamina=S.player.maxStamina; Status.clearAll(); Input.crouch=false; }
-  return { spawn, heal, useMed, damage, update, resetForRaid, isMoving:()=>movingFlag, RADIUS, HEIGHT };
+  function resetForRaid(){ S.player.health=S.player.maxHealth; S.player.stamina=S.player.maxStamina; Status.clearAll(); Input.crouch=false; vault=null; }
+  return { spawn, heal, useMed, damage, update, resetForRaid, isMoving:()=>movingFlag, inVault, RADIUS, HEIGHT };
 })();

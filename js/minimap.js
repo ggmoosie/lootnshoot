@@ -1,6 +1,13 @@
 // minimap.js — SYS: Minimap. Top-down canvas radar + heading compass. Reads World
 // footprints, loot/container marks, known enemies, extract, and the player
 // transform.
+//
+// HEADING-UP radar: the player sits fixed at centre with a marker that always
+// points UP, and the world rotates around it so "forward" is always the top of
+// the dial — the standard, readable FPS minimap. (The previous build drew a
+// north-up map with a spinning player arrow, which read as "weird" because the
+// map never matched where you were looking.) A circular clip keeps the corners
+// clean; markers outside the radius are dropped.
 import { T } from "./three.js";
 import { S, MODE } from "./state.js";
 import { GFX } from "./gfx.js";
@@ -9,8 +16,8 @@ import { Loot } from "./loot.js";
 import { Enemies } from "./enemies.js";
 
 export const Minimap = (function(){
-  let cv,ctx,acc=0,strip;
-  function init(){ cv=document.getElementById('minimap'); if(cv&&cv.getContext) ctx=cv.getContext('2d'); strip=document.getElementById('compassStrip'); }
+  let cv,ctx,acc=0,strip,SZ=180;
+  function init(){ cv=document.getElementById('minimap'); if(cv&&cv.getContext){ ctx=cv.getContext('2d'); SZ=cv.width||180; } strip=document.getElementById('compassStrip'); }
   const _fwd=new T.Vector3();
   function bearing(){ GFX.camera.getWorldDirection(_fwd); let d=Math.atan2(_fwd.x,_fwd.z)*180/Math.PI; return ((d%360)+360)%360; }
   function compass(h){ if(!strip) return; let html=''; const px=1.7;
@@ -31,20 +38,68 @@ export const Minimap = (function(){
     const inRaid=S.mode===MODE.RAID;
     if(wrap) wrap.style.display=inRaid?'':'none';
     const comp=document.getElementById('compass'); if(comp) comp.style.visibility=inRaid?'':'hidden';
-    if(!inRaid){ ctx.clearRect(0,0,180,180); if(strip) strip.innerHTML=''; return; }
+    if(!inRaid){ ctx.clearRect(0,0,SZ,SZ); if(strip) strip.innerHTML=''; return; }
     acc+=dt; if(acc<0.08) return; acc=0;
-    const info=World.mapInfo(), p=GFX.yaw.position, R=56, S2=88/R, cx=90, cy=90;
-    const tx=wx=>cx+(wx-p.x)*S2, ty=wz=>cy-(wz-p.z)*S2;
-    ctx.clearRect(0,0,180,180); ctx.fillStyle='rgba(10,12,14,.55)'; ctx.fillRect(0,0,180,180);
+
+    const info=World.mapInfo(), p=GFX.yaw.position;
+    const cx=SZ/2, cy=SZ/2, rad=SZ/2-1;      // radar centre + drawable radius
+    const RANGE=56;                            // world units shown from centre to edge
+    const S2=rad/RANGE;                        // world→radar px scale (fills the dial)
+    const h=bearing(), rot=-h*Math.PI/180;     // rotate world so heading is UP
+    const cosT=Math.cos(rot), sinT=Math.sin(rot);
+    // map a world point → radar pixel (player-relative, heading-up rotation baked in)
+    function toRadar(wx,wz){
+      const dx=(wx-p.x)*S2, dy=-(wz-p.z)*S2;   // north-up offset (px), +z = up
+      return { x:cx + dx*cosT - dy*sinT, y:cy + dx*sinT + dy*cosT };
+    }
+    const inDial=(x,y)=>{ const ddx=x-cx, ddy=y-cy; return ddx*ddx+ddy*ddy <= rad*rad; };
+
+    // --- backdrop -----------------------------------------------------------
+    ctx.clearRect(0,0,SZ,SZ);
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx,cy,rad,0,Math.PI*2); ctx.clip();   // circular radar face
+    ctx.fillStyle='rgba(10,12,14,.62)'; ctx.fillRect(0,0,SZ,SZ);
+
+    // --- building footprints (rotated rects) --------------------------------
     ctx.fillStyle='#2c333b';
-    for(const b of info.boxes){ const x=tx(b.x-b.w/2), y=ty(b.z+b.d/2), w=b.w*S2, h=b.d*S2; if(x>180||y>180||x+w<0||y+h<0) continue; ctx.fillRect(x,y,Math.max(1,w),Math.max(1,h)); }
-    for(const m of Loot.mapMarks()){ const x=tx(m.x), y=ty(m.z); if(x<0||x>180||y<0||y>180) continue;
+    for(const b of info.boxes){
+      // skip far-away boxes cheaply (radius test on the box centre + half-diagonal)
+      const c=toRadar(b.x,b.z); const half=(Math.hypot(b.w,b.d)/2)*S2;
+      if((c.x-cx)*(c.x-cx)+(c.y-cy)*(c.y-cy) > (rad+half)*(rad+half)) continue;
+      // draw the rect as a rotated quad (corners transformed individually)
+      const c1=toRadar(b.x-b.w/2,b.z-b.d/2), c2=toRadar(b.x+b.w/2,b.z-b.d/2),
+            c3=toRadar(b.x+b.w/2,b.z+b.d/2), c4=toRadar(b.x-b.w/2,b.z+b.d/2);
+      ctx.beginPath(); ctx.moveTo(c1.x,c1.y); ctx.lineTo(c2.x,c2.y); ctx.lineTo(c3.x,c3.y); ctx.lineTo(c4.x,c4.y); ctx.closePath(); ctx.fill();
+    }
+
+    // --- loot / containers / corpses ----------------------------------------
+    for(const m of Loot.mapMarks()){ const q=toRadar(m.x,m.z); if(!inDial(q.x,q.y)) continue;
       ctx.fillStyle = m.kind==='cont'?'#e8a33d':m.kind==='contdone'?'#5a5040':m.kind==='corpse'?'#888':'#caa84a';
-      ctx.beginPath(); ctx.arc(x,y,m.kind==='cont'?2.6:1.8,0,7); ctx.fill(); }
-    if(info.extract){ const x=tx(info.extract.x), y=ty(info.extract.z); ctx.strokeStyle='#57c06b'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(x,y,5,0,7); ctx.stroke(); ctx.fillStyle='#57c06b'; ctx.font='8px monospace'; ctx.fillText('EXT',x-7,y-8); }
-    for(const e of Enemies.list()){ if(e.dead) continue; if(!(e.alert||e.group.position.distanceTo(p)<22)) continue; const x=tx(e.group.position.x), y=ty(e.group.position.z); if(x<0||x>180||y<0||y>180) continue; ctx.fillStyle='#d8453e'; ctx.beginPath(); ctx.arc(x,y,2.6,0,7); ctx.fill(); }
-    const h=bearing(); ctx.save(); ctx.translate(cx,cy); ctx.rotate(h*Math.PI/180); ctx.fillStyle='#e8a33d'; ctx.beginPath(); ctx.moveTo(0,-6); ctx.lineTo(4,5); ctx.lineTo(0,2); ctx.lineTo(-4,5); ctx.closePath(); ctx.fill(); ctx.restore();
-    ctx.strokeStyle='#2a3138'; ctx.lineWidth=1; ctx.strokeRect(0,0,180,180);
+      ctx.beginPath(); ctx.arc(q.x,q.y,m.kind==='cont'?2.6:1.8,0,7); ctx.fill(); }
+
+    // --- extract pad --------------------------------------------------------
+    if(info.extract){ const q=toRadar(info.extract.x,info.extract.z);
+      // clamp the extract marker to the rim so it's always visible as a bearing cue
+      let ex=q.x, ey=q.y; const off=inDial(ex,ey);
+      if(!off){ const a=Math.atan2(ey-cy,ex-cx); ex=cx+Math.cos(a)*(rad-7); ey=cy+Math.sin(a)*(rad-7); }
+      ctx.strokeStyle='#57c06b'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(ex,ey,5,0,7); ctx.stroke();
+      ctx.fillStyle='#57c06b'; ctx.font='8px monospace'; ctx.fillText('EXT',ex-7,ey-8); }
+
+    // --- known enemies (alerted or within sight range) ----------------------
+    for(const e of Enemies.list()){ if(e.dead) continue;
+      if(!(e.alert||e.group.position.distanceTo(p)<22)) continue;
+      const q=toRadar(e.group.position.x,e.group.position.z); if(!inDial(q.x,q.y)) continue;
+      ctx.fillStyle='#d8453e'; ctx.beginPath(); ctx.arc(q.x,q.y,2.6,0,7); ctx.fill(); }
+
+    ctx.restore();   // drop the circular clip before the static overlay
+
+    // --- player marker: fixed at centre, always pointing UP (= forward) -----
+    ctx.fillStyle='#e8a33d';
+    ctx.beginPath(); ctx.moveTo(cx,cy-7); ctx.lineTo(cx+5,cy+6); ctx.lineTo(cx,cy+3); ctx.lineTo(cx-5,cy+6); ctx.closePath(); ctx.fill();
+
+    // --- dial frame + forward tick ------------------------------------------
+    ctx.strokeStyle='#2a3138'; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(cx,cy,rad,0,Math.PI*2); ctx.stroke();
+    ctx.strokeStyle='rgba(232,163,61,.5)'; ctx.beginPath(); ctx.moveTo(cx,cy-rad); ctx.lineTo(cx,cy-rad+5); ctx.stroke(); // N-of-screen = forward
     compass(h);
   }
   return { update, init };
