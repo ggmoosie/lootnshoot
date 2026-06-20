@@ -103,6 +103,11 @@ export const Projectiles = (function(){
   function detonate(g){
     const p=g.mesh.position.clone(); const def=g.def, kind=g.kind;
     if(def.noise) { Perception.noise(p, DATA.noise[def.noise]||DATA.noise.boom); Audio.play('boom'); }
+    // camera shake on a blast, falling off with distance to the player (frag/incendiary
+    // shake harder than a flash/smoke pop). Subtle + capped inside GFX.shake.
+    try{ if(S.mode===MODE.RAID){ const d=GFX.yaw.position.distanceTo(p);
+      const base=(kind==='frag'||kind==='incendiary')?0.9:0.4;
+      const fall=Math.max(0, 1-d/22); if(fall>0) GFX.shake(base*fall); } }catch(_){ }
     if(kind==='frag') return effFrag(p, def);
     if(kind==='smoke') return effSmoke(p, def);
     if(kind==='flash') return effFlash(p, def);

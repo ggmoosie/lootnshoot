@@ -840,6 +840,8 @@ export const UI = (function(){
       <div class="set"><span class="sl">Field of view</span><span><input type="range" id="setFov" min="60" max="100" step="1" value="${s.fov}"> <span class="sv" id="setFovV">${s.fov}°</span></span></div>
       <div class="set"><span class="sl">Invert Y axis</span><span class="btn" id="setInv" style="width:auto;margin:0;padding:6px 14px">${s.invertY?'ON':'OFF'}</span></div>
       <div class="set"><span class="sl">Infinite ammo</span><span class="btn" id="setInfAmmo" style="width:auto;margin:0;padding:6px 14px">${s.infiniteAmmo?'ON':'OFF'}</span></div>
+      <div class="set"><span class="sl">Head bob</span><span class="btn" id="setBob" style="width:auto;margin:0;padding:6px 14px">${s.headbob!==false?'ON':'OFF'}</span></div>
+      <div class="set"><span class="sl">Camera shake</span><span class="btn" id="setShake" style="width:auto;margin:0;padding:6px 14px">${s.camShake!==false?'ON':'OFF'}</span></div>
       <div class="colT" style="margin-top:16px"><span>Keybinds</span><span class="cap">click a key, then press</span></div>${kb}
       <div class="set"><span class="sl">Mouse <b style="color:var(--amber)">L</b> Fire · <b style="color:var(--amber)">R</b> ADS</span><span></span></div>
       <div style="margin-top:12px">
@@ -850,6 +852,9 @@ export const UI = (function(){
     fov.oninput=()=>{ s.fov=parseInt(fov.value); $('setFovV').textContent=s.fov+'°'; Input.applySettings(); Save.save(); };
     $('setInv').onclick=()=>{ s.invertY=!s.invertY; Save.save(); renderSettings(); };
     $('setInfAmmo').onclick=()=>{ s.infiniteAmmo=!s.infiniteAmmo; Save.save(); renderSettings(); refreshHUD(); };
+    // camera-feel toggles: flip the flag, persist, then push it live to GFX via Input.applySettings
+    $('setBob').onclick=()=>{ s.headbob=(s.headbob===false); Save.save(); Input.applySettings(); renderSettings(); };
+    $('setShake').onclick=()=>{ s.camShake=(s.camShake===false); Save.save(); Input.applySettings(); renderSettings(); };
     $('setReset').onclick=()=>{ s.binds=Object.assign({},DATA.binds); Save.save(); renderSettings(); };
     $('setClose').onclick=closeMenus;
     $('settingsCard').querySelectorAll('[data-bind]').forEach(el=>{ el.onclick=()=>{ el.classList.add('bind'); el.textContent='press…';

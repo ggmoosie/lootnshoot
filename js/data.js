@@ -182,10 +182,12 @@ DATA.binds = { forward:'KeyW', back:'KeyS', left:'KeyA', right:'KeyD', jump:'Spa
   reload:'KeyR', interact:'KeyE', pickup:'KeyF', inventory:'Tab', weapon1:'Digit1', weapon2:'Digit2',
   // melee moved off KeyV (it collided with throwCycle, also default KeyV — pressing V
   // fired BOTH a melee swing and a throwable-cycle). Melee now lives on KeyZ.
-  grenade:'KeyG', heal:'KeyH', drone:'KeyT', firemode:'KeyB', melee:'KeyZ', ammotype:'KeyX' };
+  // LASER toggle owns KeyT (user request: "T to toggle on/off"); the drone deploy
+  // moved off T to KeyU so both features keep a default bind (rebindable in Settings).
+  grenade:'KeyG', heal:'KeyH', drone:'KeyU', firemode:'KeyB', melee:'KeyZ', ammotype:'KeyX', laser:'KeyT' };
 DATA.bindLabels = { forward:'Move Forward', back:'Move Back', left:'Strafe Left', right:'Strafe Right', jump:'Jump',
   crouch:'Crouch', sprint:'Sprint', reload:'Reload', interact:'Interact / Loot', pickup:'Pick Up Item',
-  inventory:'Inventory', weapon1:'Primary', weapon2:'Secondary', grenade:'Grenade', heal:'Use Med', drone:'Deploy Drone', firemode:'Fire Mode', melee:'Melee Strike', ammotype:'Cycle Ammo Type' };
+  inventory:'Inventory', weapon1:'Primary', weapon2:'Secondary', grenade:'Grenade', heal:'Use Med', drone:'Deploy Drone', firemode:'Fire Mode', melee:'Melee Strike', ammotype:'Cycle Ammo Type', laser:'Toggle Laser' };
 
 // ----- raid stops: difficulty curve by stopIndex. -----
 DATA.stops = {

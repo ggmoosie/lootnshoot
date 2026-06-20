@@ -103,6 +103,8 @@ export const Player = (function(){
     const tot=Inventory.gearTotals();
     if(tot.dr>0){ Inventory.wearGear(n); n*=(1-tot.dr); }
     S.player.health-=n; vig=0.4; document.getElementById('vig').style.opacity='0.9';
+    // subtle camera shake on a hit, scaled by how hard it landed (capped).
+    try{ GFX.shake(clamp(0.12 + n*0.012, 0.12, 0.5)); }catch(_){ }
     if(fromPos){ const camA=GFX.yaw.rotation.y; const srcA=Math.atan2(fromPos.x-GFX.yaw.position.x, fromPos.z-GFX.yaw.position.z); UI.dmgDir(srcA-camA); }
     if(Math.random()<0.22) Status.apply('bleed', 8, 2);
     Events.emit('player:changed');

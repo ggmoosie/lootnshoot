@@ -53,6 +53,7 @@ function loop(){
   World.update(dt);
   FX.update(dt);
   Minimap.update(dt);
+  GFX.tickShake(dt);     // decay the camera-shake impulse before compositing in render()
   GFX.render();
 }
 

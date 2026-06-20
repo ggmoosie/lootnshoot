@@ -25,7 +25,11 @@ export const Input = (function(){
   function actionFor(c){ const b=binds(); for(const a in b) if(b[a]===c) return a; return null; }
   function sens(){ return (S.profile&&S.profile.settings?S.profile.settings.sens:1)*SENS; }
   function invY(){ return (S.profile&&S.profile.settings&&S.profile.settings.invertY)?-1:1; }
-  function applySettings(){ const s=S.profile&&S.profile.settings; if(s&&s.fov){ GFX.baseFov=s.fov; if(S.mode!==MODE.RAID){ GFX.camera.fov=s.fov; GFX.camera.updateProjectionMatrix(); } } }
+  function applySettings(){ const s=S.profile&&S.profile.settings; if(!s) return;
+    if(s.fov){ GFX.baseFov=s.fov; if(S.mode!==MODE.RAID){ GFX.camera.fov=s.fov; GFX.camera.updateProjectionMatrix(); } }
+    // push the camera-feel (headbob / shake) toggles down to GFX so render-time
+    // compositing honors them live (default ON when the field is absent on old saves).
+    GFX.setFeel({ headbob:s.headbob!==false, camShake:s.camShake!==false }); }
   let capture=null; // rebind capture: {cb}
   function beginCapture(cb){ capture={cb}; }
   // Pointer-lock (re)acquire. requestPointerLock can be refused for ~1.25s after
@@ -70,6 +74,7 @@ export const Input = (function(){
       else if(a==='crouch') st.crouch=!st.crouch;
       else if(a==='drone') Allies.deploy();
       else if(a==='firemode') Weapons.cycleMode();
+      else if(a==='laser') Weapons.toggleLaser();
       else if(a==='pickup') World.interact('pickup');
     }
     if(a==='interact' && (S.mode===MODE.RAID||S.mode===MODE.HUB)) World.interact('interact');
