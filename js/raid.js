@@ -43,6 +43,13 @@ export const Raid = (function(){
     Save.save();
   }
   Events.on('enemy:killed', ()=>{ if(S.run) S.run.kills++; });
-  Events.on('raid:cleared', ()=>{ UI.setObjective(`Stop ${S.run.stopIndex+1}`,'Sector clear. Reach extract to leave or push deeper.',`SECTOR ${String.fromCharCode(65+S.run.stopIndex)}`); UI.banner('Area Clear','All hostiles eliminated — extract or push deeper'); Audio.play('clear'); });
+  Events.on('raid:cleared', ()=>{
+    // hostiles down — but extraction is gated on the PRIMARY objective now, so the
+    // guidance depends on whether the objective is satisfied. Objectives owns the
+    // HUD line; we just add a banner + the right flavor.
+    UI.banner('Area Clear', Objectives.canExtract()? 'All hostiles eliminated — extract or push deeper' : 'Hostiles down — finish the objective to extract');
+    Objectives.refreshLine();
+    Audio.play('clear');
+  });
   return { openDeploy, deploy, pushDeeper, extract, onDeath, openExtractChoice:()=>UI.showExtractChoice() };
 })();
