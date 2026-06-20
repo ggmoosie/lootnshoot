@@ -628,3 +628,342 @@ DATA.squadReact = {
   alertOnKill: 30,        // radius of the alert pulse a teammate's death sends out
 };
 // =====================================================================
+/* ════════════════════════════════════════════════════════════════════════════
+   SECTION: R4 CONTENT EXPANSION  (added by feat/lns-content)
+   ────────────────────────────────────────────────────────────────────────────
+   PURE CONTENT BREADTH — no new systems, no behavior. Everything here reuses the
+   already-built mechanics (the gunsmith slot taxonomy, the ammo-type/penetration
+   model, the role-driven enemy AI, the loot/vendor/recipe tables, the gear DR
+   model). Appended via Object.assign / push / wrap so it never collides with the
+   literals above — parallel agents auto-merge.
+
+   Owns, in order:
+     1. New AMMO CALIBERS (.45 ACP, 12-gauge, .338 magnum) + their type tables +
+        per-caliber FMJ default + the matching ammo ITEM stacks.
+     2. New WEAPONS (LMG, combat shotgun, bolt-action sniper, MP5-class SMG, AK +
+        bullpup AR variants, full-auto machine pistol) — base stats + gunsmith
+        slot lists + their weapon ITEM defs.
+     3. New ATTACHMENTS to fill the slots (extra optics / muzzles incl. a shotgun
+        choke / foregrips incl. a bipod / stocks / lasers / mags incl. drum + box /
+        barrels) — item defs + multiplicative/additive effect defs.
+     4. New ENEMY ROLES (medic, grenadier, shotgunner, shielded bulwark, marksman,
+        a roaming mini-boss "Warden") — stat blocks keyed off EXISTING behaviors
+        so the AI runs them unchanged; wired into the per-stop spawn pool + the
+        grenade-loadout table.
+     5. New ITEMS (meds, throwables, valuables, materials) registered into items /
+        loot / vendor / recipes / icons the same way current content does.
+   How each piece registers is documented inline at each block.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+// ─── 1. NEW CALIBERS ────────────────────────────────────────────────────────
+// Each new caliber needs (a) ammo ITEM stacks carrying `cal`+`ammoType`, (b)
+// entries in DATA.ammoTypes (the shot modifiers weapons.js folds in), and (c) a
+// DATA.ammoDefault entry — weapons.js's loadedTypeId() falls back to it, so a
+// caliber WITHOUT a default would break reload. We add all three.
+//   .45 ACP  — heavy pistol/SMG round: more punch, slower, stubbier range.
+//   12g      — buckshot: brutal up close, bleeds off fast at range (range mult).
+//   .338     — magnum rifle: long-range hammer, big pen, heavy recoil.
+Object.assign(DATA.items, {
+  // .45 ACP family
+  ammo_45:    {name:'.45 ACP',     type:'ammo', cal:'45',  ammoType:'45_fmj',  size:[1,1], stack:50, value:2, rarity:1},
+  ammo_45_ap: {name:'.45 AP',      type:'ammo', cal:'45',  ammoType:'45_ap',   size:[1,1], stack:50, value:4, rarity:2},
+  ammo_45_hp: {name:'.45 HP',      type:'ammo', cal:'45',  ammoType:'45_hp',   size:[1,1], stack:50, value:3, rarity:2},
+  // 12-gauge family
+  ammo_12g:   {name:'12g Buck',    type:'ammo', cal:'12g', ammoType:'12g_buck',size:[1,1], stack:24, value:4, rarity:1},
+  ammo_12g_slug:{name:'12g Slug',  type:'ammo', cal:'12g', ammoType:'12g_slug',size:[1,1], stack:24, value:6, rarity:2},
+  ammo_12g_flech:{name:'12g Flechette', type:'ammo', cal:'12g', ammoType:'12g_flech', size:[1,1], stack:24, value:7, rarity:3},
+  // .338 magnum family
+  ammo_338:   {name:'.338 Mag',    type:'ammo', cal:'338', ammoType:'338_fmj', size:[1,1], stack:20, value:9,  rarity:3},
+  ammo_338_ap:{name:'.338 AP',     type:'ammo', cal:'338', ammoType:'338_ap',  size:[1,1], stack:20, value:13, rarity:4},
+});
+
+// ammo TYPE stat-effect rows (same model as the existing DATA.ammoTypes block:
+// dmg/range/recoil are MULTIPLIERS, pen is 0..1 armor-ignore, tracer + color
+// cosmetic). `item` ties a type to its inventory stack.
+Object.assign(DATA.ammoTypes, {
+  // ---- .45 ACP ----
+  '45_fmj':  { cal:'45',  item:'ammo_45',    label:'FMJ', dmg:1.00, pen:0.18, range:0.95, recoil:1.05, tracer:false, color:0xffd27a },
+  '45_ap':   { cal:'45',  item:'ammo_45_ap', label:'AP',  dmg:0.94, pen:0.70, range:1.02, recoil:1.10, tracer:false, color:0xbfe0ff },
+  '45_hp':   { cal:'45',  item:'ammo_45_hp', label:'HP',  dmg:1.38, pen:0.04, range:0.82, recoil:1.00, tracer:false, color:0xff8a6a },
+  // ---- 12 gauge ----  (range<1 = buckshot bleeds off fast; slug reaches + pens)
+  '12g_buck':{ cal:'12g', item:'ammo_12g',      label:'BUCK', dmg:1.00, pen:0.10, range:0.55, recoil:1.00, tracer:false, color:0xffcf8a },
+  '12g_slug':{ cal:'12g', item:'ammo_12g_slug', label:'SLUG', dmg:1.55, pen:0.45, range:1.30, recoil:1.18, tracer:false, color:0xd9b066 },
+  '12g_flech':{cal:'12g', item:'ammo_12g_flech',label:'FLCH', dmg:0.85, pen:0.80, range:0.80, recoil:0.92, tracer:false, color:0xbfe0ff },
+  // ---- .338 magnum ----
+  '338_fmj': { cal:'338', item:'ammo_338',    label:'FMJ', dmg:1.00, pen:0.55, range:1.00, recoil:1.00, tracer:false, color:0xffd27a },
+  '338_ap':  { cal:'338', item:'ammo_338_ap', label:'AP',  dmg:0.97, pen:0.96, range:1.15, recoil:1.12, tracer:false, color:0xbfe0ff },
+});
+for(const k in DATA.ammoTypes) if(!DATA.ammoTypes[k].id) DATA.ammoTypes[k].id=k;
+// per-caliber FMJ/baseline default (loadedTypeId fallback — REQUIRED per caliber)
+Object.assign(DATA.ammoDefault, { '45':'45_fmj', '12g':'12g_buck', '338':'338_fmj' });
+
+// ─── 2. NEW WEAPONS ─────────────────────────────────────────────────────────
+// A weapon = a DATA.weapons[key] stat block (read by Weapons.stats) + a
+// DATA.items.wpn_* def with type:'weapon', weapon:key. Stats mirror the existing
+// guns exactly (damage/rpm/mag/reload/spread/adsSpread/adsTime/recoil/range/eff/
+// velocity/zoom/modes/slots). `slots` uses ONLY the established taxonomy
+// (optic/muzzle/foregrip/stock/laser/magazine/barrel) so the gunsmith + viewmodel
+// render them with zero code changes. NOTE: the shot path is single-hitscan, so
+// the shotgun is modeled as a wide-spread, high-damage, low-rpm hitscan (buckshot
+// feel) rather than literal pellets — pure-data, no new mechanic.
+Object.assign(DATA.weapons, {
+  // LMG — belt-fed suppression: huge mag, hefty damage, but loose + kicky + slow
+  // to bring up. 5.56 so it shares the common ammo economy.
+  lmg:{name:'M249 SAW', cal:'556', damage:24, rpm:680, mag:100, reload:4.2, spread:0.020, adsSpread:0.006, adsTime:0.40, recoil:0.018, range:100, eff:62, velocity:900, zoom:1, modes:['auto'], slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  // Combat shotgun — devastating point-blank, falls off hard (12g_buck range 0.55).
+  // Wide spread = the "spread of pellets". Pump cadence = low rpm + semi.
+  shotgun:{name:'M870 Breacher', cal:'12g', damage:115, rpm:90, mag:6, reload:2.8, spread:0.060, adsSpread:0.030, adsTime:0.26, recoil:0.034, range:38, eff:14, velocity:430, zoom:1, modes:['semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine']},
+  // Bolt-action sniper — one-shot-kill ceiling, tiny mag, long reach, heavy recoil.
+  bolt:{name:'AX-50 Bolt', cal:'338', damage:120, rpm:48, mag:5, reload:3.4, spread:0.004, adsSpread:0.0006, adsTime:0.46, recoil:0.045, range:240, eff:200, velocity:920, zoom:1, modes:['semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  // MP5-class SMG — controllable, accurate close SMG in .45 (heavier hit than 9mm).
+  mp5:{name:'MP5 SD', cal:'45', damage:22, rpm:720, mag:30, reload:1.7, spread:0.016, adsSpread:0.004, adsTime:0.19, recoil:0.008, range:55, eff:30, velocity:400, zoom:1, modes:['auto','burst','semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  // AK-pattern AR — hard-hitting 7.62 battle rifle, slower + kickier than the carbine.
+  ak:{name:'AKM Rifle', cal:'762', damage:38, rpm:600, mag:30, reload:2.0, spread:0.016, adsSpread:0.004, adsTime:0.28, recoil:0.020, range:110, eff:78, velocity:870, zoom:1, modes:['auto','semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  // Bullpup AR — fast-handling 5.56 carbine variant: snappy ADS, tighter than the MK1.
+  bullpup:{name:'AUG Bullpup', cal:'556', damage:27, rpm:580, mag:30, reload:1.9, spread:0.011, adsSpread:0.0025, adsTime:0.21, recoil:0.011, range:95, eff:64, velocity:890, zoom:1, modes:['auto','burst','semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  // Machine pistol — full-auto .45 sidearm: spicy fire rate, snappy, wild spread.
+  machpistol:{name:'G18 Auto', cal:'45', damage:19, rpm:1100, mag:18, reload:1.3, spread:0.030, adsSpread:0.012, adsTime:0.14, recoil:0.012, range:38, eff:18, velocity:380, zoom:1, modes:['auto','semi'], slots:['optic','muzzle','laser','magazine','barrel']},
+});
+// weapon ITEM defs (footprint sized like the existing guns: bigger = bigger grid)
+Object.assign(DATA.items, {
+  wpn_lmg:    {name:'M249 SAW',      type:'weapon', weapon:'lmg',     size:[5,2], value:2200, rarity:4},
+  wpn_shotgun:{name:'M870 Breacher', type:'weapon', weapon:'shotgun', size:[4,2], value:700,  rarity:2},
+  wpn_bolt:   {name:'AX-50 Bolt',    type:'weapon', weapon:'bolt',    size:[5,2], value:2400, rarity:4},
+  wpn_mp5:    {name:'MP5 SD',        type:'weapon', weapon:'mp5',     size:[3,2], value:680,  rarity:2},
+  wpn_ak:     {name:'AKM Rifle',     type:'weapon', weapon:'ak',      size:[4,2], value:1000, rarity:3},
+  wpn_bullpup:{name:'AUG Bullpup',   type:'weapon', weapon:'bullpup', size:[3,2], value:1100, rarity:3},
+  wpn_machpistol:{name:'G18 Auto',   type:'weapon', weapon:'machpistol', size:[2,2], value:420, rarity:2},
+});
+
+// ─── 3. NEW ATTACHMENTS ─────────────────────────────────────────────────────
+// Same two-table pattern as the GUNSMITH DEPTH section: an ITEM def (slot +
+// footprint + value/rarity) and an EFFECT def (mods=multiplicative on effective
+// stats, add=additive on the 1.0-baselined scalars, zoom sets optic outright,
+// flags quiet/laser). Slots reuse the established taxonomy so they slot into any
+// gun whose `slots` list includes them. These broaden choices for the new guns
+// (and the originals) — e.g. a shotgun CHOKE, a sniper BIPOD, a DRUM mag.
+DATA.contentItems = {
+  // OPTIC — a magnified hybrid, a low-mount canted backup, a thermal scope
+  att_lpvo:{name:'1-6x LPVO',  type:'attachment', slot:'optic', size:[2,1], value:760, rarity:3},
+  att_canted:{name:'Canted Sight', type:'attachment', slot:'optic', size:[1,1], value:220, rarity:2},
+  att_thermal:{name:'Thermal Scope', type:'attachment', slot:'optic', size:[2,1], value:1500, rarity:5},
+  // MUZZLE — a shotgun choke (tightens the wide spread) + a big magnum brake
+  att_choke:{name:'Breaching Choke', type:'attachment', slot:'muzzle', size:[1,1], value:200, rarity:2},
+  att_magbrake:{name:'Magnum Brake', type:'attachment', slot:'muzzle', size:[1,1], value:360, rarity:3},
+  // FOREGRIP — a deployable bipod (big recoil cut, handling cost) + a handstop
+  att_bipod:{name:'Bipod', type:'attachment', slot:'foregrip', size:[2,1], value:420, rarity:3},
+  att_handstop:{name:'Handstop', type:'attachment', slot:'foregrip', size:[1,1], value:160, rarity:2},
+  // STOCK — a heavy recoil-pad stock + a folding stock (mobility)
+  att_stock_heavy:{name:'Recoil Pad Stock', type:'attachment', slot:'stock', size:[2,1], value:360, rarity:3},
+  att_stock_fold:{name:'Folding Stock', type:'attachment', slot:'stock', size:[1,1], value:300, rarity:2},
+  // LASER — an IR pressure-pad laser (stronger hipfire than the basic dot)
+  att_laser_ir:{name:'IR Laser', type:'attachment', slot:'laser', size:[1,1], value:420, rarity:3},
+  // MAGAZINE — a drum (huge capacity, slow), a box mag (capacity), a match mag
+  att_mag_drum:{name:'Drum Mag', type:'attachment', slot:'magazine', size:[2,2], value:520, rarity:4},
+  att_mag_box:{name:'Box Mag', type:'attachment', slot:'magazine', size:[1,2], value:360, rarity:3},
+  // BARREL — a heavy match barrel (range/velocity, slower) + a shrouded short
+  att_barrel_match:{name:'Match Barrel', type:'attachment', slot:'barrel', size:[2,1], value:520, rarity:4},
+};
+for(const k in DATA.contentItems){ DATA.contentItems[k].id=k; DATA.items[k]=DATA.contentItems[k]; }
+
+DATA.contentAttachments = {
+  // OPTIC
+  att_lpvo:{slot:'optic', mods:{adsSpread:0.45, adsTime:1.1}, zoom:3.2},
+  att_canted:{slot:'optic', mods:{adsSpread:0.8, adsTime:0.92}, zoom:1.1},
+  att_thermal:{slot:'optic', mods:{adsSpread:0.4, adsTime:1.25}, zoom:3.6},
+  // MUZZLE — choke tightens spread hard (shotgun friendly); magnum brake = recoil
+  att_choke:{slot:'muzzle', mods:{spread:0.55, adsSpread:0.7, range:1.1}},
+  att_magbrake:{slot:'muzzle', mods:{recoil:0.5, spread:0.95, adsSpread:1.04}},
+  // FOREGRIP — bipod = big recoil cut, handling/ADS cost; handstop = handling/ADS
+  att_bipod:{slot:'foregrip', mods:{recoil:0.62, adsTime:1.08}, add:{handling:-0.08}},
+  att_handstop:{slot:'foregrip', mods:{recoil:0.92, adsTime:0.88}, add:{handling:0.18, mobility:0.04}},
+  // STOCK — heavy pad cuts recoil at a mobility cost; folding trades for mobility
+  att_stock_heavy:{slot:'stock', mods:{recoil:0.72, adsTime:0.94}, add:{mobility:-0.08, handling:0.06}},
+  att_stock_fold:{slot:'stock', mods:{recoil:0.98, adsTime:0.95}, add:{mobility:0.16, handling:0.1}},
+  // LASER — strongest hipfire boost + spread cut, small ADS-time cost
+  att_laser_ir:{slot:'laser', mods:{spread:0.72, adsTime:1.04}, add:{hipAccuracy:0.6}, laser:true},
+  // MAGAZINE — drum: huge capacity, slow reload; box: capacity; match: fast reload + precision
+  att_mag_drum:{slot:'magazine', add:{mag:50}, mods:{reload:1.4}},
+  att_mag_box:{slot:'magazine', add:{mag:20}, mods:{reload:1.12}},
+  // BARREL — match: range/velocity/precision, slower ADS + slight handling cost
+  att_barrel_match:{slot:'barrel', mods:{range:1.3, velocity:1.25, eff:1.3, adsSpread:0.85, adsTime:1.14}, add:{handling:-0.05}},
+};
+for(const k in DATA.contentAttachments){ DATA.contentAttachments[k].id=k; DATA.attachments[k]=DATA.contentAttachments[k]; }
+
+// ─── 4. NEW ENEMY ROLES ─────────────────────────────────────────────────────
+// Each role is a stat block keyed off an EXISTING behavior so enemies.js runs it
+// unchanged (holdRange recognises snipe/hold/rush; everything else defaults to a
+// mid band). `kit` follows the established shape: wpn[] = weapon ITEM ids,
+// optic = an optic item id, att = 0..1 odds of suppressor/grip/red-dot,
+// armor/helmet = equip odds, heavyArmor:true upgrades the rolled armor to lvl4.
+// We add the new guns to their kits so the fresh weapons actually appear on
+// enemies (and drop as loot via the corpse system).
+Object.assign(DATA.enemies, {
+  // MEDIC — support body: hangs back (hold), light gun, but high HP so it's a
+  // priority kill that drags fights out. Carries an SMG; modest armor.
+  medic:    {name:'Medic',    hp:95,  dmg:6,  accuracy:0.48, speed:2.4, fireDelay:1.2, range:50, behavior:'hold',  tier:2, kit:{wpn:['wpn_mp5','wpn_smg'], armor:0.45, helmet:0.30, att:0.30}},
+  // GRENADIER — flushes campers with frags (DATA.enemyNades below makes it nade-
+  // happy). Holds at range with a mid rifle.
+  grenadier:{name:'Grenadier',hp:80,  dmg:9,  accuracy:0.50, speed:2.6, fireDelay:1.1, range:58, behavior:'hold',  tier:2, kit:{wpn:['wpn_ak','wpn_carbine'], armor:0.40, helmet:0.35, att:0.40}},
+  // SHOTGUNNER — close-quarters rusher with the breacher; lethal up close, weak far.
+  shotgunner:{name:'Breacher', hp:78, dmg:14, accuracy:0.42, speed:4.0, fireDelay:0.9, range:24, behavior:'rush',  tier:2, kit:{wpn:['wpn_shotgun'], armor:0.35, helmet:0.20, att:0.20}},
+  // SHIELDED BULWARK — a walking wall: heavy armor + helmet, very high HP, slow.
+  // Reuses 'hold'; heavyArmor flag pushes the rolled plate to lvl4 (high DR).
+  bulwark:  {name:'Bulwark',  hp:220, dmg:12, accuracy:0.50, speed:1.4, fireDelay:1.2, range:46, behavior:'hold',  tier:3, kit:{wpn:['wpn_lmg','wpn_carbine'], armor:1.0, helmet:0.9, att:0.6, heavyArmor:true}},
+  // MARKSMAN — a precision DMR/AK body between the sniper and the line troops.
+  marksman: {name:'Marksman', hp:70,  dmg:30, accuracy:0.66, speed:1.9, fireDelay:1.8, range:120, behavior:'snipe',tier:3, kit:{wpn:['wpn_dmr','wpn_ak'], armor:0.40, helmet:0.55, att:0.7, optic:'att_scope'}},
+  // WARDEN — roaming mini-boss: huge HP, heavy plate + helmet, an LMG, and the
+  // scope optic. tier 4 (above the existing tiers). Spawns only at deeper stops.
+  warden:   {name:'Warden',   hp:360, dmg:16, accuracy:0.62, speed:2.0, fireDelay:0.9, range:90, behavior:'hold',  tier:4, kit:{wpn:['wpn_lmg'], armor:1.0, helmet:1.0, att:0.9, heavyArmor:true, optic:'att_scope'}},
+});
+
+// grenade loadout for the new roles (merged into DATA.enemies[role].nades, same
+// loop the AI-grenades section used). Grenadier is the headline thrower.
+Object.assign(DATA.enemyNades, {
+  grenadier:{ count:3, chance:0.95 },
+  bulwark:  { count:1, chance:0.35 },
+  medic:    { count:1, chance:0.25 },
+  warden:   { count:2, chance:0.70 },
+  // shotgunner: none (closes the distance instead); marksman: none (long-range)
+});
+for(const r in DATA.enemyNades){ if(DATA.enemies[r] && !DATA.enemies[r].nades) DATA.enemies[r].nades=DATA.enemyNades[r]; }
+
+// wire the new roles into the per-stop spawn pool. DATA.stops.roles(i) returns a
+// fresh array per call, so we WRAP it (read the prior result, append the new
+// roles gated by depth) — additive + merge-safe vs. the original literal above.
+const _r4PrevRoles = DATA.stops.roles.bind(DATA.stops);
+DATA.stops.roles = function(i){
+  const pool = _r4PrevRoles(i);
+  if(i>=1) pool.push('shotgunner','grenadier');
+  if(i>=2) pool.push('medic','marksman');
+  if(i>=3) pool.push('bulwark');
+  if(i>=4) pool.push('warden');   // mini-boss only in the deep stops
+  return pool;
+};
+
+// ─── 5. NEW ITEMS (meds / throwables / valuables / materials) ────────────────
+// Registered into DATA.items exactly like the originals. Meds reuse the
+// consumables/Status model; throwables reuse DATA.throwables; valuables/materials
+// are inert stacks (loot.js banks valuables, crafting reads materials).
+Object.assign(DATA.items, {
+  // --- meds ---
+  med_surgery:{name:'Surgical Kit', type:'med', use:'surgery', heal:120, cure:'bleed', size:[2,2], value:520, rarity:4},
+  med_painkill:{name:'Painkillers', type:'med', use:'painkill', heal:0, buff:'stamina', size:[1,1], stack:4, value:120, rarity:2},
+  med_tourniquet:{name:'Tourniquet', type:'med', use:'tq', heal:8, cure:'bleed', size:[1,1], stack:3, value:80, rarity:2},
+  // --- throwables (key into DATA.throwables, added below) ---
+  nade_he:{name:'HE Grenade',   type:'throwable', throw:'he',    dmg:180, radius:7, size:[1,1], stack:2, value:240, rarity:3},
+  nade_emp:{name:'EMP Grenade', type:'throwable', throw:'emp',   dmg:0,   radius:8, size:[1,1], stack:2, value:200, rarity:3},
+  nade_gas:{name:'Gas Grenade', type:'throwable', throw:'gas',   dmg:8,   radius:7, size:[1,1], stack:2, value:160, rarity:2},
+  throw_knife:{name:'Throwing Knife', type:'throwable', throw:'knife', dmg:70, radius:1, size:[1,1], stack:5, value:60, rarity:1},
+  // --- valuables (loot.js banks these straight to bag value on pickup) ---
+  val_watch:{name:'Luxury Watch',  type:'valuable', size:[1,1], value:650,  rarity:3},
+  val_diamond:{name:'Raw Diamond', type:'valuable', size:[1,1], stack:10, value:900, rarity:5},
+  val_artifact:{name:'Relic Idol', type:'valuable', size:[2,2], value:2200, rarity:5},
+  val_coins:{name:'Coin Roll',     type:'valuable', size:[1,1], stack:40, value:80, rarity:2},
+  // --- materials (crafting inputs; inert stacks) ---
+  mat_powder:{name:'Gunpowder',    type:'material', size:[1,1], stack:30, value:30, rarity:2},
+  mat_steel:{name:'Steel Plate',   type:'material', size:[1,2], stack:10, value:90, rarity:2},
+  mat_optics:{name:'Optic Glass',  type:'material', size:[1,1], stack:15, value:75, rarity:3},
+  mat_polymer:{name:'Polymer',     type:'material', size:[1,1], stack:30, value:22, rarity:1},
+});
+
+// throwable behaviour tuning for the new grenades (same shape as DATA.throwables:
+// `kind` selects the existing detonation effect Projectiles already runs — we map
+// the new throwables onto the established frag/flash/smoke/incendiary handlers so
+// NO new behavior is needed; only the numbers + flavor differ).
+Object.assign(DATA.throwables, {
+  // HE = a heavier frag (reuses the frag handler, bigger numbers)
+  he:{ item:'nade_he', kind:'frag', label:'HE', color:0x33401f, fuse:2.2, dmg:180, radius:7, noise:'boom' },
+  // EMP = a flash-class stun (reuses the flash handler: no damage, stuns nearby)
+  emp:{ item:'nade_emp', kind:'flash', label:'EMP', color:0x6fe0ff, fuse:1.6, dmg:0, radius:8, blind:1.2, stun:4.0, noise:'boom' },
+  // Gas = a lingering damage cloud (reuses incendiary's ground-DoT handler)
+  gas:{ item:'nade_gas', kind:'incendiary', label:'GAS', color:0x9ad06f, fuse:1.4, dmg:8, radius:7, duration:9, tick:6, noise:null },
+  // Throwing knife = a tiny instant frag-class pop (single-target feel via r=1)
+  knife:{ item:'throw_knife', kind:'frag', label:'KNIFE', color:0xc8c0ac, fuse:0.0, dmg:70, radius:1, noise:'step' },
+});
+// extend the throwable cycle order (only carried types show in the selector)
+DATA.throwOrder.push('he','emp','gas','knife');
+
+// consumable tuning for the new meds (same shape as DATA.consumables: useTime =
+// use-anim seconds; heal = instant restore; regen/regenDur = heal-over-time;
+// buff/buffDur/buffMag = a timed Status effect; cure clears a debuff).
+Object.assign(DATA.consumables, {
+  med_surgery:   { name:'Surgical Kit', useTime:6.0, heal:60, regen:12, regenDur:5, cure:'bleed' },
+  med_painkill:  { name:'Painkillers',  useTime:1.4, heal:0,  buff:'stamina', buffDur:20, buffMag:1.2 },
+  med_tourniquet:{ name:'Tourniquet',   useTime:2.0, heal:8,  cure:'bleed' },
+});
+
+// ─── ICONS for everything new (emoji stand-ins, matches DATA.iconId style) ───
+Object.assign(DATA.iconId, {
+  // ammo
+  ammo_45:'🟤', ammo_45_ap:'🔹', ammo_45_hp:'🟧', ammo_12g:'🔴', ammo_12g_slug:'⚫', ammo_12g_flech:'🔱',
+  ammo_338:'🟡', ammo_338_ap:'🔷',
+  // weapons
+  wpn_lmg:'🔫', wpn_shotgun:'🔫', wpn_bolt:'🎯', wpn_mp5:'🔫', wpn_ak:'🔫', wpn_bullpup:'🔫', wpn_machpistol:'🔫',
+  // attachments
+  att_lpvo:'🔭', att_canted:'📐', att_thermal:'🌡️', att_choke:'🧯', att_magbrake:'🔥', att_bipod:'🦿',
+  att_handstop:'✋', att_stock_heavy:'🪵', att_stock_fold:'🪗', att_laser_ir:'🔆', att_mag_drum:'🥁',
+  att_mag_box:'🔋', att_barrel_match:'📏',
+  // meds
+  med_surgery:'🧰', med_painkill:'💊', med_tourniquet:'🩹',
+  // throwables
+  nade_he:'💥', nade_emp:'🌀', nade_gas:'☣️', throw_knife:'🔪',
+  // valuables
+  val_watch:'⌚', val_diamond:'💎', val_artifact:'🗿', val_coins:'🪙',
+  // materials
+  mat_powder:'⚗️', mat_steel:'⬜', mat_optics:'🔍', mat_polymer:'🧱',
+});
+
+// ─── VENDOR STOCK for the new content (appended, never rewritten) ────────────
+DATA.vendor.push(
+  // ammo
+  'ammo_45','ammo_45_ap','ammo_12g','ammo_12g_slug','ammo_338',
+  // weapons
+  'wpn_shotgun','wpn_mp5','wpn_ak','wpn_bullpup','wpn_machpistol',
+  // attachments
+  'att_lpvo','att_canted','att_choke','att_bipod','att_handstop','att_stock_heavy','att_laser_ir','att_mag_box','att_barrel_match',
+  // meds + throwables
+  'med_surgery','med_painkill','med_tourniquet','nade_he','nade_gas','throw_knife',
+  // materials
+  'mat_powder','mat_steel','mat_polymer');
+
+// ─── LOOT SEEDING for the new content (push -> merge-safe vs the tables above) ─
+DATA.loot.crate_common.push(
+  {id:'ammo_45',w:4,min:10,max:30},{id:'ammo_12g',w:3,min:6,max:14},
+  {id:'mat_powder',w:3,min:2,max:6},{id:'mat_polymer',w:3,min:2,max:6},
+  {id:'val_coins',w:3,min:1,max:3},{id:'med_tourniquet',w:3},{id:'throw_knife',w:2});
+DATA.loot.crate_rare.push(
+  {id:'wpn_shotgun',w:2},{id:'wpn_ak',w:2},{id:'wpn_bullpup',w:2},{id:'wpn_mp5',w:2},
+  {id:'wpn_lmg',w:1},{id:'wpn_bolt',w:1},{id:'wpn_machpistol',w:2},
+  {id:'att_lpvo',w:2},{id:'att_bipod',w:2},{id:'att_mag_drum',w:1},{id:'att_thermal',w:1},{id:'att_barrel_match',w:1},
+  {id:'med_surgery',w:1},{id:'nade_he',w:2},{id:'nade_emp',w:1},
+  {id:'val_watch',w:2},{id:'val_diamond',w:1},{id:'val_artifact',w:1},{id:'mat_optics',w:2},{id:'mat_steel',w:2});
+DATA.loot.enemy_drop.push(
+  {id:'ammo_45',w:4,min:8,max:24},{id:'ammo_12g',w:2,min:4,max:10},{id:'ammo_338',w:1,min:4,max:10},
+  {id:'med_tourniquet',w:2},{id:'val_coins',w:2,min:1,max:2},{id:'throw_knife',w:1});
+DATA.loot.cont_weapon.push(
+  {id:'ammo_45',w:4,min:15,max:40},{id:'ammo_45_ap',w:2,min:15,max:40},
+  {id:'ammo_12g',w:3,min:8,max:18},{id:'ammo_12g_slug',w:2,min:8,max:18},{id:'ammo_338',w:2,min:6,max:14},{id:'ammo_338_ap',w:1,min:6,max:14},
+  {id:'att_canted',w:3},{id:'att_choke',w:3},{id:'att_handstop',w:3},{id:'att_stock_fold',w:2},{id:'att_mag_box',w:3},{id:'att_magbrake',w:2},{id:'att_laser_ir',w:2},
+  {id:'wpn_shotgun',w:2},{id:'wpn_mp5',w:2},{id:'wpn_machpistol',w:2});
+DATA.loot.cont_med.push(
+  {id:'med_surgery',w:2},{id:'med_painkill',w:3},{id:'med_tourniquet',w:4,min:1,max:2});
+DATA.loot.cont_locker.push(
+  {id:'val_coins',w:3,min:1,max:2},{id:'mat_polymer',w:3,min:1,max:3},{id:'med_painkill',w:2},{id:'mat_powder',w:2,min:1,max:3});
+DATA.loot.cont_safe.push(
+  {id:'val_watch',w:4},{id:'val_diamond',w:2},{id:'val_artifact',w:1},{id:'wpn_bolt',w:1},{id:'att_thermal',w:1},{id:'mat_optics',w:2});
+
+// ─── RECIPES for the new content (additive; the originals stay above) ─────────
+if(Array.isArray(DATA.recipes)) DATA.recipes.push(
+  {id:'r_45',   name:'Print .45 ACP (x30)', station:'printer', out:{id:'ammo_45',qty:30},  in:[{id:'mat_powder',qty:2},{id:'mat_polymer',qty:1}]},
+  {id:'r_12g',  name:'Load 12g Buck (x16)', station:'printer', out:{id:'ammo_12g',qty:16}, in:[{id:'mat_powder',qty:2},{id:'mat_scrap',qty:2}]},
+  {id:'r_12g_slug', name:'Cast 12g Slug (x16)', station:'printer', out:{id:'ammo_12g_slug',qty:16}, in:[{id:'mat_powder',qty:2},{id:'mat_steel',qty:1}]},
+  {id:'r_338',  name:'Print .338 Mag (x16)', station:'printer', out:{id:'ammo_338',qty:16}, in:[{id:'mat_powder',qty:3},{id:'mat_steel',qty:1},{id:'mat_filament',qty:1}]},
+  {id:'r_surgery', name:'Build Surgical Kit', station:'printer', out:{id:'med_surgery',qty:1}, in:[{id:'med_kit',qty:1},{id:'mat_elec',qty:2},{id:'mat_polymer',qty:2}]},
+  {id:'r_he',   name:'Craft HE Grenade', station:'printer', out:{id:'nade_he',qty:1}, in:[{id:'mat_powder',qty:4},{id:'mat_steel',qty:1}]},
+  {id:'r_optics', name:'Grind Optic Glass', station:'printer', out:{id:'mat_optics',qty:2}, in:[{id:'mat_elec',qty:1},{id:'mat_filament',qty:2}]});
+
+// every NEW def carries its own id (the early items-stamp loops only ran over the
+// earlier blocks; re-stamp so serialize/icons/stacking work for these too).
+for(const k in DATA.items) if(!DATA.items[k].id) DATA.items[k].id=k;
+// =====================================================================
