@@ -69,7 +69,7 @@ _no top-level exports_
 
 ## js/objectives.js
 
-- `Objectives` (const) — js/objectives.js:8
+- `Objectives` (const) — js/objectives.js:15
 
 ## js/perception.js
 
