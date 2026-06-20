@@ -123,7 +123,7 @@ _no top-level exports_
 
 ## js/ui.js
 
-- `UI` (const) — js/ui.js:26
+- `UI` (const) — js/ui.js:27
 
 ## js/util.js
 
