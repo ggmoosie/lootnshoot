@@ -93,7 +93,7 @@ _no top-level exports_
 
 ## js/raid.js
 
-- `Raid` (const) — js/raid.js:14
+- `Raid` (const) — js/raid.js:15
 
 ## js/save.js
 
@@ -135,7 +135,7 @@ _no top-level exports_
 
 ## js/vendor.js
 
-- `Vendor` (const) — js/vendor.js:9
+- `Vendor` (const) — js/vendor.js:19
 
 ## js/weapons.js
 
