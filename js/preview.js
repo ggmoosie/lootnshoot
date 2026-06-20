@@ -94,17 +94,73 @@ export function createPreview(canvas, opts = {}){
   }
 
   // ---- public API ----
-  // swap in a new model: clears+frees the previous one, adds, frames the camera
-  function setModel(obj3d){
+  // swap in a new model: clears+frees the previous one, adds, frames the camera.
+  // keepRotation: preserve the current pivot yaw/pitch across the swap (used when a
+  // model is rebuilt to reflect a state change — e.g. equipping gear on the doll —
+  // so it does NOT snap back to its default facing on every rebuild).
+  function setModel(obj3d, keepRotation){
     if (disposed) return;
+    const rx = pivot.rotation.x, ry = pivot.rotation.y;
     if (model){ pivot.remove(model); disposeObject(model); model = null; }
-    pivot.rotation.set(0, 0, 0);
+    if (keepRotation){ pivot.rotation.set(rx, ry, 0); } else { pivot.rotation.set(0, 0, 0); }
     model = obj3d || null;
     if (model) pivot.add(model);
     syncSize();
     frame();
   }
   function setAutoRotate(on){ autoRotate = !!on; }
+  let _dragDetach = null;
+  // imperatively nudge the model's facing (used by drag-to-rotate). dy tilts pitch,
+  // clamped so the model can't flip fully upside-down.
+  function rotateBy(dx, dy){
+    pivot.rotation.y += dx;
+    pivot.rotation.x = Math.max(-1.0, Math.min(1.0, pivot.rotation.x + (dy || 0)));
+  }
+  // Attach click-drag rotation to the canvas (the gunsmith/doll control model):
+  // auto-rotate is turned OFF and the user spins the model by dragging on it. A
+  // tooltip-style external hook can be passed so the caller can hide its own tip on
+  // drag-start. Returns a detach fn (called automatically on dispose).
+  function enableDragRotate(opts){
+    opts = opts || {};
+    autoRotate = false;
+    let dragging = false, lx = 0, ly = 0, pid = null;
+    const SENS = 0.01;
+    function down(e){
+      dragging = true; lx = e.clientX; ly = e.clientY; pid = e.pointerId;
+      try{ canvas.setPointerCapture(pid); }catch(_){}
+      canvas.style.cursor = 'grabbing';
+      if (opts.onDragStart) opts.onDragStart();
+      e.preventDefault(); e.stopPropagation();
+    }
+    function move(e){
+      if (!dragging) return;
+      rotateBy((e.clientX - lx) * SENS, (e.clientY - ly) * SENS);
+      lx = e.clientX; ly = e.clientY;
+      e.preventDefault();
+    }
+    function up(e){
+      if (!dragging) return;
+      dragging = false; canvas.style.cursor = 'grab';
+      try{ if (pid != null) canvas.releasePointerCapture(pid); }catch(_){}
+      pid = null;
+    }
+    canvas.style.cursor = 'grab';
+    canvas.style.touchAction = 'none';
+    canvas.addEventListener('pointerdown', down);
+    canvas.addEventListener('pointermove', move);
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointercancel', up);
+    canvas.addEventListener('lostpointercapture', up);
+    const detach = () => {
+      canvas.removeEventListener('pointerdown', down);
+      canvas.removeEventListener('pointermove', move);
+      canvas.removeEventListener('pointerup', up);
+      canvas.removeEventListener('pointercancel', up);
+      canvas.removeEventListener('lostpointercapture', up);
+    };
+    _dragDetach = detach;
+    return detach;
+  }
   function resize(){ if (!disposed) syncSize(); }
   function render(){
     if (disposed) return;
@@ -133,6 +189,7 @@ export function createPreview(canvas, opts = {}){
     if (disposed) return;
     disposed = true;
     stop();
+    if (_dragDetach){ _dragDetach(); _dragDetach = null; }
     if (model){ pivot.remove(model); disposeObject(model); model = null; }
     scene.traverse(o => { if (o.geometry) o.geometry.dispose(); });
     renderer.dispose();
@@ -142,6 +199,6 @@ export function createPreview(canvas, opts = {}){
   }
 
   syncSize();
-  return { setModel, setAutoRotate, resize, render, start, stop, dispose,
+  return { setModel, setAutoRotate, rotateBy, enableDragRotate, resize, render, start, stop, dispose,
            get scene(){ return scene; }, get camera(){ return camera; } };
 }

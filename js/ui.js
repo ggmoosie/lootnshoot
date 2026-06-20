@@ -90,13 +90,17 @@ export const UI = (function(){
   // ---------- overlay helpers ----------
   const OVS=['ovStart','ovInv','ovVendor','ovCraft','ovSkill','ovExtract','ovResult','ovPause','ovSettings','ovMod'];
   function hideAll(){ OVS.forEach(o=>$(o).classList.remove('show')); }
-  function closeMenus(){ hideAll(); hideCtx(); loot=null; Inventory.setExternal(null); disposeGunPreview(); disposeMannequin(); disposeCorpseMannequin();
+  function closeMenus(){ hideAll(); hideCtx(); hideTip(); clearReveal(); loot=null; Inventory.setExternal(null); disposeGunPreview(); disposeMannequin(); disposeCorpseMannequin();
     if(S.mode===MODE.MENU){ const pm=prevMode; S.setMode(pm);
       if(pm===MODE.PAUSE){ $('ovPause').classList.add('show'); }
       else if(pm===MODE.BOOT){ $('ovStart').classList.add('show'); }
       else if(pm===MODE.RAID||pm===MODE.HUB){ Input.relock(); } } }
   let prevMode=MODE.HUB;
   function openOverlay(id){ prevMode = S.mode===MODE.MENU?prevMode:S.mode; S.setMode(MODE.MENU); document.exitPointerLock(); hideAll(); $(id).classList.add('show'); }
+  // The mode the player is REALLY in. Opening a menu overlay flips S.mode to MENU,
+  // which would otherwise hide HUB-only UI (the stash column) and break HUB/RAID
+  // routing while the inventory is open. Fall back to prevMode in that case.
+  function effMode(){ return S.mode===MODE.MENU ? prevMode : S.mode; }
 
   function openStation(kind){
     if(kind==='inventory') return toggleInventory();
@@ -134,8 +138,51 @@ export const UI = (function(){
   // Loot a corpse (structured: equip slots + nested rig/backpack grids) or a crate
   // (flat grid). Register the right external shape so Inventory.locate/move can see
   // its slots + grids, then render the dual-panel loot screen.
-  function openLoot(corpse){ loot=corpse; Inventory.setExternal(corpse.equip?{equip:corpse.equip}:corpse.grid); openOverlay('ovInv'); renderInventory(); }
+  function openLoot(corpse){ loot=corpse; Inventory.setExternal(corpse.equip?{equip:corpse.equip}:corpse.grid); openOverlay('ovInv'); renderInventory();
+    // Flat crate, first open → reveal its contents one at a time with per-item progress.
+    if(corpse && !corpse.equip && corpse.grid && !corpse.revealed) startReveal(corpse);
+  }
   function isCorpse(c){ return !!(c&&c.equip); }
+
+  // ---- staggered crate reveal ----
+  // Show the crate immediately (empty), then surface each item sequentially: a small
+  // per-item progress bar fills, then the item pops into the grid. Re-opening a crate
+  // that's already been revealed just shows everything (revealed=true short-circuits).
+  let revealTimers=[];
+  function clearReveal(){ for(const t of revealTimers){ clearTimeout(t); clearInterval(t); } revealTimers=[]; }
+  function startReveal(crate){
+    clearReveal();
+    const items=[...crate.grid.items];
+    if(!items.length){ crate.revealed=true; return; }
+    crate.grid.items=[];                       // empty the visible crate
+    crate.revealing=true; crate.revealProg=0; crate.revealIdx=0; crate.revealTotal=items.length;
+    renderInventory();
+    // total search budget split across items (min feel), each item gets a fill then a pop
+    const total=Math.max(0.6,(crate.searchTime||1.2));
+    const per=Math.max(260, Math.min(900, (total*1000)/items.length));
+    let i=0;
+    const next=()=>{
+      if(loot!==crate || !$('ovInv').classList.contains('show')){ // bailed out → dump the rest in
+        crate.grid.items.push(...items.slice(i)); crate.revealing=false; crate.revealed=true; clearReveal(); return;
+      }
+      if(i>=items.length){ crate.revealing=false; crate.revealed=true; crate.revealProg=0; renderInventory(); return; }
+      crate.revealIdx=i+1; crate.revealProg=0;
+      const steps=12, stepMs=per/steps; let s=0;
+      const iv=setInterval(()=>{ s++; crate.revealProg=s/steps; updateRevealBar(crate);
+        if(s>=steps){ clearInterval(iv);
+          crate.grid.items.push(items[i]);     // pop the item in
+          Audio.play('ui'); i++; renderInventory();
+          const t=setTimeout(next, 90); revealTimers.push(t);
+        } }, stepMs);
+      revealTimers.push(iv);
+    };
+    next();
+  }
+  // lightweight in-place update of the reveal progress bar (avoids a full re-render per frame)
+  function updateRevealBar(crate){
+    const fill=document.getElementById('revealFill'); if(fill) fill.style.width=Math.round((crate.revealProg||0)*100)+'%';
+    const lab=document.getElementById('revealLab'); if(lab) lab.textContent=`Uncovering ${crate.revealIdx}/${crate.revealTotal}…`;
+  }
 
   function gridHTML(grid,label,gk){
     let h=`<div class="col"><div class="colT"><span>${label}</span><span class="cap">${grid.w}×${grid.h}</span></div><div class="gridscroll"><div class="grid" data-gk="${gk}" style="width:${grid.w*CELL}px;height:${grid.h*CELL}px">`;
@@ -189,13 +236,14 @@ export const UI = (function(){
     const e=S.profile.equip; let cols='';
     if(e.rig){ gridMap.rig=e.rig.inst.container; cols+=gridHTML(gridMap.rig,'Rig','rig'); }
     if(e.backpack){ gridMap.backpack=e.backpack.inst.container; cols+=gridHTML(gridMap.backpack,'Backpack','backpack'); }
-    if(S.mode===MODE.HUB){ gridMap.stash=Inventory.stash(); cols+=gridHTML(gridMap.stash,'Stash','stash'); }
+    if(effMode()===MODE.HUB){ gridMap.stash=Inventory.stash(); cols+=gridHTML(gridMap.stash,'Stash','stash'); }
     // no carried containers (e.g. deployed with no rig/pack) — show why, not a void
-    if(!cols && S.mode===MODE.RAID) cols=`<div class="col"><div class="emptyState"><span class="ic">🎒</span>No rig or pack equipped — you have nowhere to stow loot. Equip one back at the stash.</div></div>`;
+    if(!cols && effMode()===MODE.RAID) cols=`<div class="col"><div class="emptyState"><span class="ic">🎒</span>No rig or pack equipped — you have nowhere to stow loot. Equip one back at the stash.</div></div>`;
     return cols;
   }
 
   function renderInventory(){
+    hideTip();            // any tooltip from the previous render is now orphaned
     gridMap={};
     let body;
     if(loot && isCorpse(loot)){
@@ -206,7 +254,9 @@ export const UI = (function(){
     } else if(loot){
       // legacy flat container (crate): its grid + the player's gear/grids
       gridMap.ext=loot.grid; const lootCol=gridHTML(loot.grid,(loot.label||'Loot').toUpperCase(),'ext');
-      body=`<div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}${lootCol}</div>`;
+      // while the crate is revealing its contents, show a per-item progress strip
+      const revealBar = loot.revealing ? `<div class="reveal-strip"><div class="reveal-lab" id="revealLab">Uncovering ${loot.revealIdx||1}/${loot.revealTotal||1}…</div><div class="reveal-track"><div class="reveal-fill" id="revealFill" style="width:${Math.round((loot.revealProg||0)*100)}%"></div></div></div>` : '';
+      body=`<div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}<div class="lootcolwrap">${revealBar}${lootCol}</div></div>`;
     } else {
       body=`<div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}</div>`;
     }
@@ -222,7 +272,7 @@ export const UI = (function(){
     $('invCard').querySelectorAll('.gi').forEach(el=>{
       el.addEventListener('pointerdown', startDrag);
       el.addEventListener('contextmenu', ev=>{ ev.preventDefault(); showCtx(el.dataset.uid*1, ev.clientX, ev.clientY); });
-      el.addEventListener('mouseenter', ev=>showTip(el.dataset.uid*1, ev.clientX, ev.clientY));
+      el.addEventListener('mouseenter', ev=>showTip(el.dataset.uid*1, ev.clientX, ev.clientY, el));
       el.addEventListener('mousemove', ev=>moveTip(ev.clientX, ev.clientY));
       el.addEventListener('mouseleave', hideTip);
       el.addEventListener('dblclick', ev=>{ ev.preventDefault(); hideTip(); smartUse(el.dataset.uid*1); });
@@ -243,22 +293,34 @@ export const UI = (function(){
   // inventory open and survive renderInventory's innerHTML rebuilds (we re-parent
   // the persistent canvas back into the fresh #dollFig and just rebuild the model
   // to reflect the new loadout). Disposed in closeMenus → no leaked renderer/RAF.
-  let manPrev=null, manCanvas=null;
+  let manPrev=null, manCanvas=null, manEquipSig=null;
   function disposeMannequin(){
     if(manPrev){ manPrev.dispose(); manPrev=null; }
     if(manCanvas && manCanvas.parentNode) manCanvas.parentNode.removeChild(manCanvas);
-    manCanvas=null;
+    manCanvas=null; manEquipSig=null;
   }
+  // a stable signature of the EQUIPPED gear the doll renders, so we only rebuild the
+  // model when equipment actually changes — not on every inv:changed tick (which
+  // would jitter/reset the model and its rotation each time a grid item moves).
+  function equipSig(e){ if(!e) return ''; return EQUIP_SLOTS.map(s=>{ const it=e[s]; if(!it) return s+':-';
+      const at = it.inst&&it.inst.attachments ? Object.keys(it.inst.attachments).sort().map(k=>k+'='+it.inst.attachments[k]).join(',') : '';
+      return s+':'+it.def.id+(at?'#'+at:''); }).join('|'); }
   function refreshMannequin(){
     if(!manPrev || !S.profile) return;
-    manPrev.setModel(buildMannequin(S.profile.equip));
+    const sig=equipSig(S.profile.equip);
+    if(sig===manEquipSig) return;            // gear unchanged → leave the model (and its rotation) alone
+    const first=manEquipSig===null;
+    manEquipSig=sig;
+    manPrev.setModel(buildMannequin(S.profile.equip), !first); // keep rotation across rebuilds
   }
   function mountMannequin(){
     const fig=$('dollFig'); if(!fig) return;
     if(!manCanvas){
       manCanvas=document.createElement('canvas'); manCanvas.className='doll-3d';
       fig.appendChild(manCanvas);
-      manPrev=createPreview(manCanvas, { autoRotate:true, rotateSpeed:0.5, fov:38, fitOffset:1.25 });
+      // no auto-spin: the doll only rotates while click-dragged (gunsmith control model)
+      manPrev=createPreview(manCanvas, { autoRotate:false, fov:38, fitOffset:1.25 });
+      manPrev.enableDragRotate({ onDragStart:hideTip });
       manPrev.start();
     } else {
       fig.appendChild(manCanvas);
@@ -272,24 +334,30 @@ export const UI = (function(){
   // the left column. Built from the corpse's own equip object (which buildMannequin
   // already understands — it's the same {helmet,armor,rig,backpack,primary,...}
   // slot shape). Disposed when the loot screen closes (closeMenus).
-  let corpsePrev=null, corpseCanvas=null;
+  let corpsePrev=null, corpseCanvas=null, corpseEquipSig=null;
   function disposeCorpseMannequin(){
     if(corpsePrev){ corpsePrev.dispose(); corpsePrev=null; }
     if(corpseCanvas && corpseCanvas.parentNode) corpseCanvas.parentNode.removeChild(corpseCanvas);
-    corpseCanvas=null;
+    corpseCanvas=null; corpseEquipSig=null;
   }
   function mountCorpseMannequin(c){
     const fig=$('corpseFig'); if(!fig) return;
     if(!corpseCanvas){
       corpseCanvas=document.createElement('canvas'); corpseCanvas.className='doll-3d';
       fig.appendChild(corpseCanvas);
-      corpsePrev=createPreview(corpseCanvas, { autoRotate:true, rotateSpeed:0.5, fov:38, fitOffset:1.25 });
+      corpsePrev=createPreview(corpseCanvas, { autoRotate:false, fov:38, fitOffset:1.25 });
+      corpsePrev.enableDragRotate({ onDragStart:hideTip });
       corpsePrev.start();
     } else {
       fig.appendChild(corpseCanvas);
       corpsePrev.resize();
     }
-    if(corpsePrev) corpsePrev.setModel(buildMannequin(c.equip));
+    if(!corpsePrev) return;
+    const sig=equipSig(c.equip);
+    if(sig===corpseEquipSig) return;           // body's kit unchanged → don't rebuild/reset
+    const first=corpseEquipSig===null;
+    corpseEquipSig=sig;
+    corpsePrev.setModel(buildMannequin(c.equip), !first);
   }
 
   // Take all: a corpse drains from its equip slots + nested grids; a crate from its
@@ -302,13 +370,16 @@ export const UI = (function(){
       return out; }
     return [...loot.grid.items];
   }
-  function takeAll(){ if(!loot) return; const dest=Inventory.carried()[0]||Inventory.stash();
-    for(const it of lootItems()) Inventory.quickTo(it.uid, dest); renderInventory(); refreshHUD(); }
+  function takeAll(){ if(!loot) return;
+    // Tarkov sort each looted item: relevant → rig (fallback pack/stash), rest → pack
+    for(const it of lootItems()) Inventory.quickToAny(it.uid, intakeTargets(it.def));
+    renderInventory(); refreshHUD(); }
 
   // ----- drag/drop -----
   function startDrag(ev){
     if(ev.button!==undefined && ev.button!==0) return;
     const uid=this.dataset.uid*1; const loc=Inventory.locate(uid); if(!loc) return;
+    if(ev.altKey){ ev.preventDefault(); autoEquip(uid); return; }
     if(ev.shiftKey || ev.ctrlKey || ev.metaKey){ ev.preventDefault(); quickMove(uid); return; }
     ev.preventDefault(); hideCtx(); hideTip();
     drag={ uid, rot:loc.item.rot, def:loc.item.def };
@@ -319,12 +390,40 @@ export const UI = (function(){
   function onExternal(loc){ return loc.where==='extequip' || loc.tag==='ext'; }
   // a place on the corpse for an incoming player item: its rig, else its pack
   function corpseStash(){ const gs=Inventory.extGrids(); return gs[0]||null; }
+  // Tarkov-style auto-sort target list when pulling loot INTO the player: relevant
+  // items (ammo/meds/throwables) prefer the RIG then fall back to the BACKPACK;
+  // everything else prefers the BACKPACK then falls back to the RIG. carried() is
+  // [rig, backpack]; in the hub it's empty, so we append the stash as a final sink.
+  function intakeTargets(def){
+    const cs=Inventory.carried(); const rig=cs[0]||null, bag=cs[1]||null;
+    const order = Inventory.rigRelevant(def) ? [rig, bag] : [bag, rig];
+    order.push(Inventory.stash());                 // final fallback (hub stash / nowhere-to-stow)
+    return order;
+  }
   // shift+click: send item to the logical "other" inventory
-  function quickMove(uid){ const loc=Inventory.locate(uid); if(!loc) return; let dest=null;
-    if(loot){ dest = onExternal(loc) ? (Inventory.carried()[0]||Inventory.stash()) : (isCorpse(loot)?corpseStash():loot.grid); }
-    else if(S.mode===MODE.HUB){ dest = loc.tag==='stash' ? (Inventory.carried()[0]||Inventory.stash()) : Inventory.stash(); }
+  function quickMove(uid){ const loc=Inventory.locate(uid); if(!loc) return;
+    // pulling FROM a loot source (corpse/crate) into the player → Tarkov sort w/ fallback
+    if(loot && onExternal(loc)){
+      if(Inventory.quickToAny(uid, intakeTargets(loc.item.def))){ Audio.play('ui'); renderInventory(); refreshHUD(); }
+      else UI_noRoom();
+      return;
+    }
+    let dest=null;
+    if(loot){ dest = isCorpse(loot)?corpseStash():loot.grid; }            // sending TO the body/crate
+    else if(effMode()===MODE.HUB){ dest = loc.tag==='stash' ? (Inventory.carried()[0]||Inventory.stash()) : Inventory.stash(); }
     else { const cs=Inventory.carried(); dest = (loc.tag==='carried' && cs[1]) ? cs[1] : cs[0]; }
     if(dest && Inventory.quickTo(uid,dest)){ Audio.play('ui'); renderInventory(); refreshHUD(); } }
+  function UI_noRoom(){ toast('No room','neg'); }
+  // alt-click: auto-equip / swap a piece into its appropriate slot. Weapons fill the
+  // primary slot first, else the secondary; gear (armor/helmet/clothing/rig/backpack)
+  // goes to its own slot. Inventory.equip already swaps out whatever was there.
+  function autoEquip(uid){
+    const loc=Inventory.locate(uid); if(!loc) return; const def=loc.item.def; let ok=false;
+    if(def.type==='weapon'){ const slot=S.profile.equip.primary?(S.profile.equip.secondary?'primary':'secondary'):'primary'; ok=Inventory.equip(uid, slot); }
+    else if(['armor','helmet','clothing','rig','backpack'].includes(def.type) || Inventory.slotFor(def)){ ok=Inventory.equip(uid); }
+    if(ok) Audio.play('ui');
+    renderInventory(); refreshHUD();
+  }
   // double-click: smart use/equip
   function smartUse(uid){ const loc=Inventory.locate(uid); if(!loc) return; const def=loc.item.def;
     if(def.type==='weapon') Inventory.equip(uid,'primary');
@@ -375,9 +474,9 @@ export const UI = (function(){
     else if(def.type==='attachment') acts.push(['Install on weapon',()=>Inventory.installAttachment(uid)]);
     else if(def.type==='med'||def.type==='food') acts.push(['Use',()=>{ Player.heal(def.heal); if(def.cure)Status.clear('bleed'); Inventory.dropOrDestroy(uid); }]);
     else if(def.type==='deployable') acts.push(['Deploy',()=>Allies.deploy()]);
-    if(loot && onExternal(loc)) acts.push(['Take',()=>Inventory.quickTo(uid, Inventory.carried()[0]||Inventory.stash())]);
+    if(loot && onExternal(loc)) acts.push(['Take',()=>Inventory.quickToAny(uid, intakeTargets(def))]);
     else if(loot){ const dest=isCorpse(loot)?corpseStash():loot.grid; if(dest) acts.push(['→ Body',()=>Inventory.quickTo(uid, dest)]); }
-    if(S.mode===MODE.HUB){ if(loc.tag!=='stash') acts.push(['→ Stash',()=>Inventory.quickTo(uid,Inventory.stash())]); else { const c=Inventory.carried()[0]; if(c) acts.push(['→ Carry',()=>Inventory.quickTo(uid,c)]); } acts.push(['Sell '+Inventory.sellValue(it)+'c',()=>Vendor.sell(uid)]); }
+    if(effMode()===MODE.HUB){ if(loc.tag!=='stash') acts.push(['→ Stash',()=>Inventory.quickTo(uid,Inventory.stash())]); else { const c=Inventory.carried()[0]; if(c) acts.push(['→ Carry',()=>Inventory.quickTo(uid,c)]); } acts.push(['Sell '+Inventory.sellValue(it)+'c',()=>Vendor.sell(uid)]); }
     acts.push(['Discard',()=>Inventory.dropOrDestroy(uid)]);
     const ctx=$('ctx'); ctx.innerHTML=`<div class="ci t">${def.name}</div>`+acts.map((a,i)=>`<div class="ci" data-i="${i}">${a[0]}</div>`).join('');
     ctx.style.left=Math.min(x,innerWidth-170)+'px'; ctx.style.top=Math.min(y,innerHeight-280)+'px'; ctx.style.display='block';
@@ -405,11 +504,23 @@ export const UI = (function(){
     else if(def.type==='backpack'||def.type==='rig') L.push(['Grid',def.grid[0]+'×'+def.grid[1]]);
     L.push(['Size',def.size[0]+'×'+def.size[1]],['Value',def.value+'c']); return L;
   }
-  function showTip(uid,x,y){ if(drag) return; const loc=Inventory.locate(uid); if(!loc) return; const def=loc.item.def;
+  // the element the current tooltip is sourced from — so we can detect when it
+  // leaves the DOM (e.g. on a re-render) and auto-hide a now-orphaned tooltip.
+  let tipSrc=null;
+  function showTip(uid,x,y,srcEl){ if(drag) return; const loc=Inventory.locate(uid); if(!loc) return; const def=loc.item.def;
+    tipSrc=srcEl||null;
     const t=$('tip'); t.innerHTML=`<div class="tn">${def.name}</div><div class="tt">${def.type}</div>`+statLines(def, loc.item).map(s=>`<div class="ts"><span>${s[0]}</span><b>${s[1]}</b></div>`).join('');
     t.style.left=Math.min(x+14,innerWidth-210)+'px'; t.style.top=Math.min(y+14,innerHeight-150)+'px'; t.style.display='block'; }
-  function moveTip(x,y){ const t=$('tip'); if(t.style.display==='block'){ t.style.left=Math.min(x+14,innerWidth-210)+'px'; t.style.top=Math.min(y+14,innerHeight-150)+'px'; } }
-  function hideTip(){ $('tip').style.display='none'; }
+  function moveTip(x,y){ const t=$('tip'); if(t.style.display==='block'){
+    // source element gone from the DOM (re-render/looted) → drop the stuck tip
+    if(tipSrc && !document.body.contains(tipSrc)){ hideTip(); return; }
+    t.style.left=Math.min(x+14,innerWidth-210)+'px'; t.style.top=Math.min(y+14,innerHeight-150)+'px'; } }
+  function hideTip(){ const t=$('tip'); if(t) t.style.display='none'; tipSrc=null; }
+  // global safety net: a tooltip must never linger. Kill it on blur, scroll, and any
+  // drag-start, and whenever its source element is removed from the page.
+  addEventListener('blur', hideTip);
+  addEventListener('scroll', hideTip, true);
+  addEventListener('pointerdown', ev=>{ if(tipSrc && ev.target!==tipSrc && (!tipSrc.contains||!tipSrc.contains(ev.target))) hideTip(); }, true);
 
   // ----- weapon modding screen (live 3D gunsmith) -----
   // The schematic SVG was replaced by a LIVE 3D render of the configured weapon
@@ -550,7 +661,9 @@ export const UI = (function(){
           <button class="shopbuy ${can?'':'no'}" data-buy="${id}" ${out?'disabled':''}>${out?'Out':p+'c'}</button></div>`; }).join('')+`</div>`;
     } else if(vendorTab==='sell'){
       const items=Inventory.stash().items;
-      body = items.length ? `<div class="shopgrid">`+items.map(it=>`<div class="shopcard r-${it.def.rarity||1}">
+      const sellTotal=items.reduce((a,it)=>a+Inventory.sellValue(it),0);
+      body = items.length ? `<div class="shophead" style="margin:2px 0 10px"><span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;">${items.length} item${items.length>1?'s':''} · ${sellTotal}c total</span><button class="shopbuy sell" id="sellAll" style="width:auto">⇪ Sell all +${sellTotal}c</button></div>`
+        + `<div class="shopgrid">`+items.map(it=>`<div class="shopcard r-${it.def.rarity||1}">
           <div class="shopic">${iconFor(it.def)}</div>
           <div class="shopnm">${it.def.name}</div><div class="shopmeta">${it.def.type}${it.qty>1?` · ×${it.qty}`:''}</div>
           <button class="shopbuy sell" data-sell="${it.uid}">+${Inventory.sellValue(it)}c</button></div>`).join('')+`</div>`
@@ -586,6 +699,7 @@ export const UI = (function(){
     $('vendorCard').querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ vendorTab=b.dataset.tab; renderVendor(); });
     $('vendorCard').querySelectorAll('[data-buy]').forEach(b=>b.onclick=()=>{ Vendor.buy(b.dataset.buy); Audio.play('ui'); renderVendor(); refreshHUD(); });
     $('vendorCard').querySelectorAll('[data-sell]').forEach(b=>b.onclick=()=>{ Vendor.sell(b.dataset.sell*1); Audio.play('pickup'); renderVendor(); refreshHUD(); });
+    { const sa=$('sellAll'); if(sa) sa.onclick=()=>{ Vendor.sellAll(); Audio.play('pickup'); renderVendor(); refreshHUD(); }; }
     $('vendorCard').querySelectorAll('[data-bb]').forEach(b=>b.onclick=()=>{ Vendor.buyback(b.dataset.bb); Audio.play('ui'); renderVendor(); refreshHUD(); });
   }
 

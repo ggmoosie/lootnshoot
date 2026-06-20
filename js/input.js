@@ -47,7 +47,11 @@ export const Input = (function(){
       else if(a==='pickup') World.interact('pickup');
     }
     if(a==='interact' && (S.mode===MODE.RAID||S.mode===MODE.HUB)) World.interact('interact');
-    if(a==='inventory'){ e.preventDefault(); if(S.mode===MODE.HUB||S.mode===MODE.RAID) UI.toggleInventory(); }
+    if(a==='inventory'){ e.preventDefault();
+      // TAB toggles: open from HUB/RAID, and also CLOSE when it's already open
+      // (open puts us in MENU mode, so we must allow MENU+visible inventory here).
+      const invOpen=(()=>{ const o=document.getElementById('ovInv'); return !!(o&&o.classList.contains('show')); })();
+      if(S.mode===MODE.HUB||S.mode===MODE.RAID||invOpen) UI.toggleInventory(); }
     if(e.code==='Escape'){ if(S.mode===MODE.MENU) UI.closeMenus(); else if(S.mode===MODE.PAUSE) UI.resume(); else if(S.mode===MODE.RAID) UI.pause(); else if(S.mode===MODE.HUB) UI.openStation('settings'); }
   });
   addEventListener('keyup',e=> keys[e.code]=false);

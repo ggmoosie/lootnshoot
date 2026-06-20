@@ -119,6 +119,24 @@ export const Vendor = (function(){
     Events.emit('progress:changed'); Save.save();
   }
 
+  // sell EVERY sellable item currently in the stash, in one action. Snapshots the
+  // uid list first (selling mutates the grid as it goes). Returns the count sold.
+  function sellAll(){
+    const uids=Inventory.stash().items.map(it=>it.uid);
+    if(!uids.length){ UI.toast('Nothing to sell','neg'); return 0; }
+    let total=0, n=0;
+    for(const uid of uids){
+      const loc=Inventory.locate(uid); if(!loc||loc.where!=='grid') continue;
+      const it=loc.item; const v=Inventory.sellValue(it);
+      const sold={ id:it.def.id, qty:it.qty||1, name:it.def.name };
+      Inventory.dropOrDestroy(uid);
+      S.profile.credits+=v; addRep(v); pushBuyback(sold);
+      total+=v; n++;
+    }
+    if(n){ UI.toast(`Sold ${n} item${n>1?'s':''} +${total}c`,'pos'); Events.emit('progress:changed'); Events.emit('inv:changed'); Save.save(); }
+    return n;
+  }
+
   // ---- buy-back --------------------------------------------------------------
   let _bbId=1;
   function pushBuyback(sold){
@@ -157,7 +175,7 @@ export const Vendor = (function(){
   }
   function stockInfo(id){ return { qty:stockOf(id), max:maxFor(id), restockIn:restockIn(id) }; }
 
-  return { price, buy, sell, buyback, buybackList,
+  return { price, buy, sell, sellAll, buyback, buybackList,
            stockOf, stockInfo, restockIn, maxFor,
            repInfo, tier, TUNE };
 })();
