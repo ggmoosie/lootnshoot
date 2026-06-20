@@ -31,7 +31,10 @@ export const World = (function(){
     // baseY lets a prop sit ON the terrain heightfield instead of the y=0 plane;
     // colliders stay 2D (XZ) so this is purely visual seating.
     const by=opt.baseY||0; m.position.set(x,by+h/2,z); m.castShadow=true; m.receiveShadow=true; GFX.world.add(m);
-    if(opt.collide!==false){ colliders.push({minX:x-w/2,maxX:x+w/2,minZ:z-d/2,maxZ:z+d/2, ref:opt.ref}); mapBoxes.push({x,z,w,d}); }
+    // `top` (obstacle top Y) lets the vault/climb system tell a low, hoppable
+    // obstacle (cover, fences, low ledges) from an un-vaultable wall — colliders
+    // are still 2D for movement; this is read-only metadata.
+    if(opt.collide!==false){ colliders.push({minX:x-w/2,maxX:x+w/2,minZ:z-d/2,maxZ:z+d/2, ref:opt.ref, top:by+h}); mapBoxes.push({x,z,w,d}); }
     if(opt.solid!==false) solids.push(m);
     return m;
   }
@@ -93,16 +96,76 @@ export const World = (function(){
       if(d2<radius*radius){ const d=Math.sqrt(d2)||1e-4, push=(radius-d)/d; pos.x+=dx*push; pos.z+=dz*push; } }
   }
 
-  function addDoor(x,z){
+  // is (x,z) clear of every solid collider (with a body radius)? — used to
+  // confirm a vault/climb LANDING spot isn't inside another wall/obstacle.
+  function spotClear(x,z,radius){
+    for(const c of colliders){ if(c.open) continue;
+      const cx=Math.max(c.minX,Math.min(x,c.maxX)), cz=Math.max(c.minZ,Math.min(z,c.maxZ));
+      const dx=x-cx, dz=z-cz; if(dx*dx+dz*dz < radius*radius) return false; }
+    return true;
+  }
+  // VAULT / CLIMB probe. Looks just ahead of the player along their facing for a
+  // surmountable obstacle (a low collider you can hop OVER = vault, or a chest-to-
+  // head-high ledge you can clamber ONTO/over = climb). Returns a traversal plan
+  //   { type:'vault'|'climb', land:{x,z}, top, rise, dur }  or null.
+  // Heights come from the collider `top` field added in addBox. The landing spot
+  // is the far side of the obstacle (vault) or the obstacle top surface (climb),
+  // and must be clear. Player Y is fixed-eye, so the actual traversal is a short
+  // scripted slide done in player.js — this just decides IF and WHERE.
+  const VAULT_MAX=1.7, CLIMB_MAX=3.2;          // obstacle-top ceilings (world units)
+  function vaultProbe(pos,dir,radius){
+    const fx=dir.x, fz=dir.z; const fl=Math.hypot(fx,fz)||1e-4; const nx=fx/fl, nz=fz/fl;
+    // sample a couple of points just ahead at body level to find the obstacle face
+    for(let reach=0.5; reach<=1.3; reach+=0.4){
+      const px=pos.x+nx*reach, pz=pos.z+nz*reach;
+      for(const c of colliders){ if(c.open) continue;
+        if(c.top==null || c.top>CLIMB_MAX) continue;            // too tall to surmount
+        if(px<c.minX-0.1||px>c.maxX+0.1||pz<c.minZ-0.1||pz>c.maxZ+0.1) continue; // not this box
+        // depth of the box along the travel direction → how far to clear it
+        const halfDepth=0.5*(Math.abs(nx)*(c.maxX-c.minX)+Math.abs(nz)*(c.maxZ-c.minZ));
+        const span=halfDepth*2;
+        const type = c.top<=VAULT_MAX ? 'vault' : 'climb';
+        // landing: just past the far edge for a vault; on top / just over for a climb
+        const cxC=(c.minX+c.maxX)/2, czC=(c.minZ+c.maxZ)/2;
+        const overshoot = span + radius + 0.7;
+        const lx = cxC + nx*overshoot*0.5, lz = czC + nz*overshoot*0.5;
+        // require a clear landing and that we're actually moving INTO the face
+        if(!spotClear(lx,lz,radius*0.8)) continue;
+        return { type, land:{x:lx,z:lz}, top:c.top, rise:c.top,
+                 dur: type==='climb'?0.55:0.4 };
+      }
+    }
+    return null;
+  }
+
+  // A swinging door that fills a doorway gap. `axis` says which way the leaf runs:
+  //   'x' → leaf spans along X (wall faces ±Z) — the classic front-door case;
+  //   'z' → leaf spans along Z (wall faces ±X) — a side/end-wall door.
+  // (x,z) is the HINGE corner of the gap; the 2u-wide leaf swings open from there.
+  // The collider is a thin closed panel over the gap (cleared when the door opens),
+  // so the 2D-AABB collision + AI pathing read an open door as a passable opening
+  // and a closed one as a wall — identical to before, now orientation-agnostic.
+  function addDoor(x,z,axis){
+    axis=axis||'x';
     const pivot=new T.Group(); pivot.position.set(x,0,z); GFX.world.add(pivot);
     const leaf=new T.Mesh(new T.BoxGeometry(2,3,.2), new T.MeshStandardMaterial({color:0x5a4632,roughness:.8}));
-    leaf.position.set(1,1.5,0); leaf.castShadow=true; pivot.add(leaf);
-    const col={minX:x-0.1,maxX:x+2.1,minZ:z-0.2,maxZ:z+0.2, open:false}; colliders.push(col);
-    const door={pivot,col,open:false};
+    let col, prompt;
+    if(axis==='x'){
+      leaf.position.set(1,1.5,0); pivot.add(leaf);
+      col={minX:x-0.1,maxX:x+2.1,minZ:z-0.2,maxZ:z+0.2, open:false};
+      prompt=new T.Vector3(x+1,1,z);
+    } else {
+      pivot.rotation.y=Math.PI/2;                       // run the leaf along Z
+      leaf.position.set(1,1.5,0); pivot.add(leaf);
+      col={minX:x-0.2,maxX:x+0.2,minZ:z-0.1,maxZ:z+2.1, open:false};
+      prompt=new T.Vector3(x,1,z+1);
+    }
+    leaf.castShadow=true; colliders.push(col);
+    const door={pivot,col,open:false,axis};
     doors.push(door);
-    interactables.push({pos:new T.Vector3(x+1,1,z), radius:2.6, label:'open door', action:()=>toggleDoor(door)});
+    interactables.push({pos:prompt, radius:2.6, label:'open door', action:()=>toggleDoor(door)});
   }
-  function toggleDoor(d){ d.open=!d.open; d.col.open=d.open; d.pivot.rotation.y=d.open?-Math.PI/2:0; }
+  function toggleDoor(d){ d.open=!d.open; d.col.open=d.open; d.pivot.rotation.y=(d.axis==='z'?Math.PI/2:0)+(d.open?-Math.PI/2:0); }
 
   // A straight wall (along X or Z) with a doorway GAP punched in it. Split into
   // two solid segments around the gap; the gap is just absence of collider, so
@@ -139,20 +202,31 @@ export const World = (function(){
     }
   }
 
-  // Building: outer shell (4 walls + front doorway + swinging door) PARTITIONED
+  // Building: outer shell (4 walls + a doorway + swinging door) PARTITIONED
   // into 2–4 rooms by internal walls, each with a doorway gap. Loot + cover are
   // distributed per-room. Larger footprints get a second floor: a raised slab
   // over part of the plan, a low parapet, and a stair ramp up. Everything is
   // built from addBox/addDoor so the colliders/solids/doors model is unchanged —
   // AI + player collision keep working with zero new concepts.
-  function addBuilding(cx,cz,w,d,h,rng,wallColor){
+  //
+  // `facing` picks WHICH wall carries the entrance ('S' -Z [default], 'N' +Z,
+  // 'W' -X, 'E' +X) so callers can aim the door at a road / yard gate and never
+  // leave a building sealed behind a fence. The other three walls stay solid.
+  // ROBUSTNESS: a building ALWAYS gets exactly one outer doorway + door, and the
+  // door is reachable because its wall faces open ground by construction.
+  function addBuilding(cx,cz,w,d,h,rng,wallColor,facing){
     const t=0.4, gw=2.6, col=wallColor||0x3a414a;
-    addBox(cx, cz+d/2, w, t, h, col);                 // back wall
-    addBox(cx-w/2, cz, t, d, h, col);                 // left wall
-    addBox(cx+w/2, cz, t, d, h, col);                 // right wall
-    // front wall with a doorway gap (centred), filled by a swinging door
-    wallWithGap('x', cx, w, cz-d/2, h, col, 0, gw);
-    addDoor(cx-1, cz-d/2);
+    facing=facing||'S';
+    // four walls: the entrance wall gets a gap+door, the rest are solid panels.
+    // S/N run along X at fixed z; W/E run along Z at fixed x.
+    if(facing==='S'){ wallWithGap('x',cx,w,cz-d/2,h,col,0,gw); addDoor(cx-1,cz-d/2,'x'); }
+    else            { addBox(cx, cz-d/2, w, t, h, col); }                  // front (-Z)
+    if(facing==='N'){ wallWithGap('x',cx,w,cz+d/2,h,col,0,gw); addDoor(cx-1,cz+d/2,'x'); }
+    else            { addBox(cx, cz+d/2, w, t, h, col); }                  // back (+Z)
+    if(facing==='W'){ wallWithGap('z',cz,d,cx-w/2,h,col,0,gw); addDoor(cx-w/2,cz-1,'z'); }
+    else            { addBox(cx-w/2, cz, t, d, h, col); }                  // left (-X)
+    if(facing==='E'){ wallWithGap('z',cz,d,cx+w/2,h,col,0,gw); addDoor(cx+w/2,cz-1,'z'); }
+    else            { addBox(cx+w/2, cz, t, d, h, col); }                  // right (+X)
 
     // ---- partition interior into rooms -------------------------------------
     // rooms come from internal walls running across the SHORT axis (so each
@@ -238,6 +312,13 @@ export const World = (function(){
     document.getElementById('threats').style.display='none';
     UI.setObjective('Safehouse','Gear up, craft, trade, then board the train.','SAFEHOUSE');
     UI.refreshHUD(); Save.save();
+    // Re-acquire mouse-look the instant we're back in the hub. Returning from a
+    // raid runs through the result overlay, which called exitPointerLock; without
+    // this the player can WALK but not LOOK until they click the canvas (and an
+    // immediate click can hit the browser's post-exit relock throttle → the
+    // "~1s frozen look" bug). relock() is gesture-safe (rBack's click is the
+    // gesture) and retries on pointerlockerror, so look frees as soon as allowed.
+    if(!Input.isTouch) Input.relock();
   }
   function station(x,z,kind,opens,color,label){
     addBox(x,z,3,1.4,1.1,0x2a2f34,{metal:.5,rough:.4});
@@ -304,7 +385,11 @@ export const World = (function(){
       const bw=6+rng()*4, bd=6+rng()*4, bh=4+rng()*4;
       const bx=jx+(rng()-.5)*(yw-bw-1)*0.6, bz=jz+(rng()-.5)*(yd-bd-1)*0.6;
       const col=0x363c44+Math.floor(rng()*0x0a0a0a);
-      addBuilding(bx,bz,bw,bd,bh,rng,col);
+      // aim the entrance at the YARD GATE so the door is always reachable from
+      // outside (through the gate, across the yard, into the building) — never
+      // a building sealed behind a solid fence run.
+      const faceByGate=['S','N','W','E'][gateSide];
+      addBuilding(bx,bz,bw,bd,bh,rng,col,faceByGate);
       yardCover(jx,jz,yw,yd,rng,1+Math.floor(rng()*2));
     }
     // a little loose open-ground cover between the lots so the streets aren't bare
@@ -328,8 +413,13 @@ export const World = (function(){
         if(Math.hypot(x,z)<18) continue;                // keep spawn clear
         const bw=Math.min(step-3, 8+rng()*5), bd=7+rng()*4, bh=4+rng()*4;
         const col=0x363c44+Math.floor(rng()*0x0a0a0a);
-        if(rng()<0.78) addBuilding(x,z,bw,bd,bh,rng,col);
-        else addBox(x,z,bw*0.7,bd*0.7,bh,col);          // a few solid blocks for variety
+        // entrances face the ROAD (the open central lane) so every storefront is
+        // enterable from the street: a row below the road (side -1) opens +Z (N),
+        // a row above it (side +1) opens -Z (S). No sealed solid blocks anymore —
+        // even the "variety" footprints are real, door-having buildings.
+        const faceRoad = side<0 ? 'N' : 'S';
+        if(rng()<0.78) addBuilding(x,z,bw,bd,bh,rng,col,faceRoad);
+        else addBuilding(x,z,bw*0.8,bd*0.8,bh,rng,col,faceRoad); // smaller, still enterable
       }
       // sidewalk cover flanking the road
       if(rng()<0.6){ const cz=(roadW/2-0.5)*(rng()<.5?-1:1); addBox(x+(rng()-.5)*step*0.3, cz, 1.4,1.4,1.3,0x33392c,{baseY:terrainHeight(x,cz)}); }
@@ -342,10 +432,16 @@ export const World = (function(){
   // SCATTER layout: the original — buildings + cover sprinkled across the arena.
   function buildScatter(H,i,rng){
     const nB=10+i*2;
+    const FACES=['S','N','W','E'];
     for(let b=0;b<nB;b++){ const bx=(rng()*2-1)*(H-12), bz=(rng()*2-1)*(H-12); if(Math.hypot(bx,bz)<16) continue;
       const col=0x363c44+Math.floor(rng()*0x0a0a0a);
-      if(rng()<0.6){ const w=7+rng()*7, d=7+rng()*7, h=4+rng()*4; addBuilding(bx,bz,w,d,h,rng,col); }
-      else { const w=4+rng()*5, d=4+rng()*5, h=3+rng()*4; addBox(bx,bz,w,d,h,col);
+      const face=FACES[Math.floor(rng()*4)];
+      if(rng()<0.6){ const w=7+rng()*7, d=7+rng()*7, h=4+rng()*4; addBuilding(bx,bz,w,d,h,rng,col,face); }
+      else {
+        // the smaller footprints used to be SEALED solid blocks (= a building with
+        // no way in). They're now real, enterable buildings too — only the loose
+        // 1u-thin lean-to next to them stays a pure cover panel.
+        const w=5+rng()*4, d=5+rng()*4, h=3.5+rng()*3; addBuilding(bx,bz,w,d,h,rng,col,face);
         if(rng()>.4){ const lx=bx+(rng()*8-4), lz=bz+(rng()*8-4); addBox(lx,lz,3+rng()*3,1,1.4,0x2a2f33,{baseY:terrainHeight(lx,lz)}); } } }
     // open-ground cover scatter — seated on the terrain so it reads as planted
     for(let c=0;c<14;c++){ const cx=(rng()*2-1)*(H-8), cz=(rng()*2-1)*(H-8); if(Math.hypot(cx,cz)<10) continue; addBox(cx,cz,1.6,1.6,1.5,0x33392c,{baseY:terrainHeight(cx,cz)}); }
@@ -502,6 +598,6 @@ export const World = (function(){
     if(extractPos){ extractMesh.rotation.y+=dt; const d=Math.hypot(p.x-extractPos.x,p.z-extractPos.z);
       if(d<3 && Objectives.canExtract() && Input.keys[Input.code('interact')]){ extractHold+=dt; if(extractHold>=2) Raid.openExtractChoice(); } else extractHold=0; }
   }
-  return { reset, buildHub, buildRaid, moveActor, interact, interactAny, update, addInteract:(o)=>interactables.push(o),
+  return { reset, buildHub, buildRaid, moveActor, vaultProbe, interact, interactAny, update, addInteract:(o)=>interactables.push(o),
            mapInfo:()=>({boxes:mapBoxes, extract:extractPos?{x:extractPos.x,z:extractPos.z}:null, size:74}), get solids(){return solids;} };
 })();

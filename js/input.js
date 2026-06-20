@@ -28,7 +28,28 @@ export const Input = (function(){
   function applySettings(){ const s=S.profile&&S.profile.settings; if(s&&s.fov){ GFX.baseFov=s.fov; if(S.mode!==MODE.RAID){ GFX.camera.fov=s.fov; GFX.camera.updateProjectionMatrix(); } } }
   let capture=null; // rebind capture: {cb}
   function beginCapture(cb){ capture={cb}; }
-  function relock(){ try{ if(!st.isTouch && (S.mode===MODE.RAID||S.mode===MODE.HUB)) GFX.dom.requestPointerLock(); }catch(e){} }
+  // Pointer-lock (re)acquire. requestPointerLock can be refused for ~1.25s after
+  // an exitPointerLock (browser security throttle) — that's the "look is frozen
+  // for a beat after returning to the safehouse" bug. We don't block input on a
+  // timer; instead, if the request errors we arm a short retry so look frees the
+  // instant the throttle clears, and the existing click handler is a manual
+  // fallback. wantLock guards the retry so we never grab the cursor mid-menu.
+  let wantLock=false, relockTimer=0, relockTries=0;
+  function relock(){
+    if(st.isTouch || !(S.mode===MODE.RAID||S.mode===MODE.HUB)){ wantLock=false; return; }
+    wantLock=true; relockTries=0;
+    try{ const r=GFX.dom.requestPointerLock(); if(r&&r.catch) r.catch(()=>{}); }catch(e){}
+  }
+  function _retryRelock(){
+    if(relockTries++>=12) return;            // ~3s of retries, then defer to the click fallback
+    clearTimeout(relockTimer);
+    relockTimer=setTimeout(()=>{
+      if(wantLock && !st.locked && !st.isTouch && (S.mode===MODE.RAID||S.mode===MODE.HUB)){
+        try{ const r=GFX.dom.requestPointerLock(); if(r&&r.catch) r.catch(()=>{}); }catch(e){}
+      }
+    }, 250); // a touch past the typical throttle window; re-arms itself via the error event
+  }
+  document.addEventListener('pointerlockerror',()=>{ if(wantLock) _retryRelock(); });
 
   addEventListener('keydown',e=>{
     if(capture){ e.preventDefault(); if(e.code!=='Escape') capture.cb(e.code); capture=null; return; }
@@ -57,7 +78,9 @@ export const Input = (function(){
   addEventListener('contextmenu',e=>e.preventDefault());
 
   GFX.dom.addEventListener('click',()=>{ if(st.isTouch) return; if((S.mode===MODE.HUB||S.mode===MODE.RAID)&&!st.locked) relock(); });
-  document.addEventListener('pointerlockchange',()=>{ st.locked=document.pointerLockElement===GFX.dom; if(!st.locked&&S.mode===MODE.RAID) UI.pause(); });
+  document.addEventListener('pointerlockchange',()=>{ st.locked=document.pointerLockElement===GFX.dom;
+    if(st.locked){ wantLock=false; clearTimeout(relockTimer); }      // got it — stop retrying
+    if(!st.locked&&S.mode===MODE.RAID) UI.pause(); });
   document.addEventListener('mousemove',e=>{ if(!st.locked) return;
     GFX.yaw.rotation.y -= e.movementX*sens();
     GFX.pitch.rotation.x = clamp(GFX.pitch.rotation.x - e.movementY*sens()*invY(), -1.5, 1.5);
