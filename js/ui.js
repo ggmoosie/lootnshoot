@@ -316,9 +316,16 @@ export const UI = (function(){
   function renderMod(){
     const loc=Inventory.locate(modUid); if(!loc||loc.item.def.type!=='weapon'){ closeMenus(); return; }
     const it=loc.item, wDef=DATA.weapons[it.def.weapon], st=Weapons.stats(it), base=DATA.weapons[it.def.weapon];
-    const slotIcon={optic:'🔭',muzzle:'🧪',tactical:'🔦'};
-    // card = where the callout sits over the 3D stage (percent of the stage box)
-    const layout={ optic:{card:[50,8]}, muzzle:{card:[17,51]}, tactical:{card:[63,52]} };
+    // baseline = the weapon with NO mods (1.0 scalars defaulted) so the live
+    // readout's up/dn arrows compare the configured gun against the bare gun.
+    const bareInst={...it, inst:{...it.inst, attachments:{}}};
+    const bare=Weapons.stats(bareInst)||base;
+    const slotIcon={optic:'🔭',muzzle:'🧪',foregrip:'🔦',stock:'🪵',laser:'🔆',magazine:'🔋',barrel:'📏',tactical:'🔦'};
+    // card = where the callout sits over the 3D stage (percent of the stage box,
+    // authored in a 0..60 vertical space matching the stage's 100/60 aspect).
+    const layout={ optic:{card:[50,8]}, barrel:{card:[84,30]}, muzzle:{card:[84,52]},
+      foregrip:{card:[62,52]}, laser:{card:[38,52]}, magazine:{card:[17,52]}, stock:{card:[15,30]},
+      tactical:{card:[62,52]} };
     // available parts per slot from inventory (carried + stash)
     const avail={}; wDef.slots.forEach(s=>avail[s]=[]);
     for(const g of [...Inventory.carried(), Inventory.stash()]) if(g) for(const t of g.items) if(t.def.type==='attachment'&&avail[t.def.slot]) avail[t.def.slot].push(t);
@@ -334,7 +341,16 @@ export const UI = (function(){
           <span class="bptxt"><span class="bpsl">${sl}</span><span class="bpnm">${cur?curDef.name:'— empty'}</span></span><span class="bpcar">▾</span></div>
         ${open?`<div class="bpdrop">${opts}</div>`:''}</div>`;
     }
-    const rows=[['Damage',st.damage,base.damage,1],['RPM',st.rpm,base.rpm,1],['Recoil',st.recoil,base.recoil,-1],['Spread',st.spread,base.spread,-1],['ADS',st.adsTime,base.adsTime,-1],['Zoom',st.zoom,base.zoom,1]];
+    // [label, current, baseline, betterDirection(+1 higher=better / -1 lower=better)]
+    const rows=[
+      ['Damage',st.damage,bare.damage,1],['RPM',st.rpm,bare.rpm,1],
+      ['Recoil',st.recoil,bare.recoil,-1],['Spread',st.spread,bare.spread,-1],
+      ['ADS',st.adsTime,bare.adsTime,-1],['Zoom',st.zoom,bare.zoom,1],
+      ['Mag',st.mag,bare.mag,1],['Reload',st.reload,bare.reload,-1],
+      ['Range',st.range,bare.range,1],['Velocity',st.velocity,bare.velocity,1],
+      ['Handling',st.handling,bare.handling,1],['Mobility',st.mobility,bare.mobility,1],
+      ['Hip Acc',st.hipAccuracy,bare.hipAccuracy,1],
+    ];
     const statHTML=rows.map(r=>{ const cur=r[1], bs=r[2], better=r[3]; let cls=''; if(Math.abs(cur-bs)>1e-6) cls=((cur>bs)===(better>0))?'up':'dn'; const fmt=v=>(Math.round(v*1000)/1000); return `<div class="bpstat"><span class="sl">${r[0]}</span><span class="sv ${cls}">${fmt(cur)}</span></div>`; }).join('');
     $('modCard').innerHTML=`<div class="eb">Gunsmith // Live Render</div><div class="shophead"><h1 style="margin:0">${it.def.name}</h1><div class="creditpill">${Object.keys(it.inst.attachments||{}).length}/${wDef.slots.length} slots</div></div>
       <div class="bpstage" id="bpstage">${cards}</div>
