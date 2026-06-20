@@ -100,7 +100,7 @@ export const UI = (function(){
   // ---------- overlay helpers ----------
   const OVS=['ovStart','ovInv','ovVendor','ovCraft','ovSkill','ovExtract','ovResult','ovPause','ovSettings','ovMod','ovReport'];
   function hideAll(){ OVS.forEach(o=>$(o).classList.remove('show')); }
-  function closeMenus(){ hideAll(); hideCtx(); hideTip(); clearReveal(); loot=null; Inventory.setExternal(null); disposeGunPreview(); disposeMannequin(); disposeCorpseMannequin();
+  function closeMenus(){ hideAll(); hideCtx(); hideTip(); clearReveal(); loot=null; openCont=null; Inventory.setExternal(null); disposeGunPreview(); disposeMannequin(); disposeCorpseMannequin();
     if(S.mode===MODE.MENU){ const pm=prevMode; S.setMode(pm);
       if(pm===MODE.PAUSE){ $('ovPause').classList.add('show'); }
       else if(pm===MODE.BOOT){ $('ovStart').classList.add('show'); }
@@ -145,6 +145,7 @@ export const UI = (function(){
   let loot=null;          // external container being looted (corpse/crate)
   let gridMap={};         // gridkey -> Grid (rebuilt each render)
   let drag=null;          // { uid, rot, def }
+  let openCont=null;      // uid of a stash/inventory CONTAINER item whose contents panel is open (right-click → Open)
 
   function toggleInventory(){ if($('ovInv').classList.contains('show')) return closeMenus(); loot=null; Inventory.setExternal(null); openOverlay('ovInv'); renderInventory(); }
   // Loot a corpse (structured: equip slots + nested rig/backpack grids) or a crate
@@ -253,24 +254,43 @@ export const UI = (function(){
     if(!cols && effMode()===MODE.RAID) cols=`<div class="col"><div class="emptyState"><span class="ic">🎒</span>No rig or pack equipped — you have nowhere to stow loot. Equip one back at the stash.</div></div>`;
     return cols;
   }
+  // ---- the contents panel for a stash/inventory CONTAINER item opened via
+  // right-click (or long-press on touch). Registers the container's nested grid as a
+  // real d&d target under 'open', so dragging / shift-click moves items in & out and
+  // the existing atomic Inventory.move/quickTo (which now recurse into nested grids)
+  // do the bookkeeping — no duplication/loss. Resolves the open uid live each render;
+  // if the container is gone (moved/sold/closed) the panel quietly drops away.
+  function openContHTML(){
+    if(openCont==null) return '';
+    const loc=Inventory.locate(openCont);
+    if(!loc || !Inventory.isContainer(loc.item)){ openCont=null; return ''; }
+    const it=loc.item; gridMap.open=Inventory.containerGrid(it);
+    // gridHTML already emits a self-contained .col (title + grid registered under
+    // 'open'); we wrap it in .contpanel for the accent border + add a close affordance.
+    let h=`<div class="contpanel">`;
+    h+=gridHTML(gridMap.open, '📦 '+it.def.name, 'open');
+    h+=`<div class="mini" style="margin:-4px 0 0 0;padding:0 2px">Drag items in/out · <b style="color:var(--amber)">shift</b>+click to ${effMode()===MODE.HUB?'stash':'pack'} · <span class="closecont" data-closecont="1">✕ close</span></div></div>`;
+    return h;
+  }
 
   function renderInventory(){
     hideTip();            // any tooltip from the previous render is now orphaned
     gridMap={};
     let body;
+    const contPanel=openContHTML();   // contents panel for an opened stash/inv container (may register gridMap.open)
     if(loot && isCorpse(loot)){
       // STRUCTURED corpse loot: two mirrored halves — corpse (left) | you (right).
       const left=`<div class="lootside"><div class="lootsideT">Corpse</div><div class="invwrap">${corpseLoadoutHTML(loot)}${corpseGridsHTML(loot)}</div></div>`;
-      const right=`<div class="lootside"><div class="lootsideT">You</div><div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}</div></div>`;
+      const right=`<div class="lootside"><div class="lootsideT">You</div><div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}${contPanel}</div></div>`;
       body=`<div class="lootcols">${left}${right}</div>`;
     } else if(loot){
       // legacy flat container (crate): its grid + the player's gear/grids
       gridMap.ext=loot.grid; const lootCol=gridHTML(loot.grid,(loot.label||'Loot').toUpperCase(),'ext');
       // while the crate is revealing its contents, show a per-item progress strip
       const revealBar = loot.revealing ? `<div class="reveal-strip"><div class="reveal-lab" id="revealLab">Uncovering ${loot.revealIdx||1}/${loot.revealTotal||1}…</div><div class="reveal-track"><div class="reveal-fill" id="revealFill" style="width:${Math.round((loot.revealProg||0)*100)}%"></div></div></div>` : '';
-      body=`<div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}<div class="lootcolwrap">${revealBar}${lootCol}</div></div>`;
+      body=`<div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}${contPanel}<div class="lootcolwrap">${revealBar}${lootCol}</div></div>`;
     } else {
-      body=`<div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}</div>`;
+      body=`<div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}${contPanel}</div>`;
     }
     $('invCard').innerHTML=`<div class="eb">${loot?'Body // Loot':'Loadout // Inventory'}</div><h1>${loot?'Loot':'Gear'}</h1>
       ${body}
@@ -293,6 +313,9 @@ export const UI = (function(){
       if(el.dataset.uid){ el.addEventListener('pointerdown', startDrag);
         el.addEventListener('contextmenu', ev=>{ ev.preventDefault(); showCtx(el.dataset.uid*1, ev.clientX, ev.clientY); }); }
     });
+    // touch long-press → context menu (desktop already has right-click); close-X on the contents panel
+    $('invCard').querySelectorAll('.gi,.eslot[data-uid]').forEach(bindLongPress);
+    const closeX=$('invCard').querySelector('[data-closecont]'); if(closeX) closeX.onclick=()=>{ openCont=null; renderInventory(); };
     mountMannequin();
     if(loot && isCorpse(loot)) mountCorpseMannequin(loot); else disposeCorpseMannequin();
     hideCtx();
@@ -386,6 +409,31 @@ export const UI = (function(){
     // Tarkov sort each looted item: relevant → rig (fallback pack/stash), rest → pack
     for(const it of lootItems()) Inventory.quickToAny(it.uid, intakeTargets(it.def));
     renderInventory(); refreshHUD(); }
+
+  // ----- touch long-press → context menu -----
+  // Desktop opens the item menu with right-click (contextmenu). Touch has no
+  // right-click, so a ~450ms press-and-hold on an item tile opens the same menu.
+  // We cancel on move (that's a drag) or early release (that's a tap/double-tap).
+  function bindLongPress(el){
+    let timer=null, sx=0, sy=0;
+    const clear=()=>{ if(timer){ clearTimeout(timer); timer=null; } };
+    el.addEventListener('pointerdown', ev=>{
+      if(ev.pointerType!=='touch') return;          // mouse/pen use real contextmenu
+      sx=ev.clientX; sy=ev.clientY;
+      clear(); timer=setTimeout(()=>{ timer=null;
+        // a still 450ms hold is a MENU, not a drag — cancel any drag started on this press
+        if(drag){ drag=null; $('dragGhost').style.display='none'; document.querySelectorAll('.gi.dragging').forEach(d=>d.classList.remove('dragging')); clearHi(); }
+        const u=el.dataset.uid*1; hideTip(); showCtx(u, sx, sy);
+      }, 450);
+    });
+    el.addEventListener('pointermove', ev=>{ if(timer && (Math.abs(ev.clientX-sx)>8||Math.abs(ev.clientY-sy)>8)) clear(); });
+    el.addEventListener('pointerup', clear);
+    el.addEventListener('pointercancel', clear);
+  }
+
+  // open / close a stash-or-inventory container's contents panel (right-click action
+  // + long-press). Toggling the already-open one closes it; opening another swaps.
+  function openContainer(uid){ openCont = (openCont===uid) ? null : uid; renderInventory(); }
 
   // ----- drag/drop -----
   function startDrag(ev){
@@ -481,11 +529,19 @@ export const UI = (function(){
 
   // ----- right-click context menu -----
   function showCtx(uid,x,y){ const loc=Inventory.locate(uid); if(!loc) return; const it=loc.item, def=it.def; const acts=[];
+    // CONTAINER (case/bag/rig with its own grid): view/manage its contents inline.
+    // Listed first so it's the primary affordance for a stored container.
+    if(Inventory.isContainer(it)) acts.push([openCont===uid?'Close contents':'Open contents',()=>{ openContainer(uid); }]);
     if(def.type==='weapon'){ acts.push(['Equip Primary',()=>Inventory.equip(uid,'primary')]); acts.push(['Equip Secondary',()=>Inventory.equip(uid,'secondary')]); acts.push(['Modify weapon',()=>openMod(uid)]); }
     else if(['armor','helmet','clothing','rig','backpack'].includes(def.type)) acts.push(['Equip',()=>Inventory.equip(uid)]);
     else if(def.type==='attachment') acts.push(['Install on weapon',()=>Inventory.installAttachment(uid)]);
     else if(def.type==='med'||def.type==='food') acts.push(['Use',()=>{ Player.heal(def.heal); if(def.cure)Status.clear('bleed'); Inventory.dropOrDestroy(uid); }]);
     else if(def.type==='deployable') acts.push(['Deploy',()=>Allies.deploy()]);
+    // when a container panel is open, offer to stow loose items INTO it (skip the
+    // container itself and items already inside — Inventory guards nesting anyway).
+    if(openCont!=null && gridMap.open && loc.grid!==gridMap.open && uid!==openCont && !Inventory.isContainer(it)){
+      acts.push(['→ Into case',()=>Inventory.quickTo(uid, gridMap.open)]);
+    }
     if(loot && onExternal(loc)) acts.push(['Take',()=>Inventory.quickToAny(uid, intakeTargets(def))]);
     else if(loot){ const dest=isCorpse(loot)?corpseStash():loot.grid; if(dest) acts.push(['→ Body',()=>Inventory.quickTo(uid, dest)]); }
     if(effMode()===MODE.HUB){ if(loc.tag!=='stash') acts.push(['→ Stash',()=>Inventory.quickTo(uid,Inventory.stash())]); else { const c=Inventory.carried()[0]; if(c) acts.push(['→ Carry',()=>Inventory.quickTo(uid,c)]); } acts.push(['Sell '+Inventory.sellValue(it)+'c',()=>Vendor.sell(uid)]); }

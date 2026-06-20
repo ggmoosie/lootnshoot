@@ -275,6 +275,15 @@
   #ctx .ci{padding:9px 14px;font-family:var(--cond);font-size:14px;cursor:pointer;border-bottom:1px solid #1c2228;}
   #ctx .ci:hover{background:#11161a;color:var(--amber);}
   #ctx .ci.t{color:var(--amber);font-family:var(--mono);font-size:11px;letter-spacing:1px;cursor:default;text-transform:uppercase;}
+  /* opened-container (case/bag) contents panel — amber-accented to read as a
+     separate "module" sitting beside the player's grids */
+  .contpanel{display:flex;flex-direction:column;gap:8px;padding:8px;border:1px solid var(--amber-d);
+    border-radius:6px;background:linear-gradient(160deg,rgba(232,163,61,.06),rgba(10,12,14,.2));box-shadow:0 0 14px rgba(232,163,61,.10);}
+  .contpanel .colT span:first-child{color:var(--amber);}
+  .contpanel .grid[data-gk="open"] .gi{animation:giPop .16s ease-out;}
+  .contpanel .grid.drop-ok{outline:1px solid var(--amber);}
+  .closecont{color:var(--dim);cursor:pointer;border-bottom:1px dashed var(--line);}
+  .closecont:hover{color:var(--bad);border-color:var(--bad);}
   /* settings */
   .set{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #1c2228;font-family:var(--mono);font-size:13px;}
   .set .sl{color:var(--text);} .set .sv{color:var(--dim);}

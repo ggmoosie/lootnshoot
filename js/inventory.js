@@ -123,6 +123,29 @@ export const Inventory = (function(){
   }
   function stash(){ return S.profile.stash; }
 
+  // ----- nested containers (cases/bags/rigs stored INSIDE another grid) -----
+  // A container item carries its own Grid on inst.container (any def with def.grid:
+  // [w,h] — backpacks, rigs, cases). These can sit inside the stash/another bag, so
+  // grid enumeration must recurse: an item in a bag-in-the-stash has to be locatable
+  // and moveable just like a top-level item.
+  function isContainer(it){ return !!(it && it.def && it.def.grid && it.inst && it.inst.container instanceof Grid); }
+  function containerGrid(it){ return isContainer(it) ? it.inst.container : null; }
+  // depth-first list of a root grid PLUS every container grid nested within it
+  // (any depth). `seen` guards against a (data-corruption) cycle so we never loop.
+  function nestedGrids(root, seen){
+    seen=seen||new Set(); const out=[];
+    if(!root || seen.has(root)) return out;
+    seen.add(root); out.push(root);
+    for(const it of root.items){ const c=containerGrid(it); if(c) for(const g of nestedGrids(c,seen)) out.push(g); }
+    return out;
+  }
+  // the container grid that directly holds a given item uid, scanning a root grid
+  // and all of its nested containers. Returns null for top-level / not found.
+  function parentGridOf(uid, root){
+    for(const g of nestedGrids(root)){ if(g.find(uid)) return g; }
+    return null;
+  }
+
   // add loot during raid -> first carried grid with room. returns true if stored.
   function addLoot(item){
     for(const g of carried()){ if(g.add(item)===0){ Events.emit('inv:changed'); return true; } }
@@ -130,12 +153,14 @@ export const Inventory = (function(){
   }
   // locate an item by uid across player equip/stash/carried, then the external
   // actor: its equip slots (corpse paper-doll) + its grids (crate / corpse rig+pack).
+  // Grid search RECURSES into nested containers (a case inside the stash, a bag
+  // inside that case, …) so items stored in a stash container are fully reachable.
   function locate(uid){
     for(const slot of EQUIP_SLOTS){ const it=S.profile.equip[slot]; if(it&&it.uid===uid) return {where:'equip', slot, item:it}; }
     if(ext&&ext.equip){ for(const slot of EQUIP_SLOTS){ const it=ext.equip[slot]; if(it&&it.uid===uid) return {where:'extequip', slot, item:it}; } }
-    const grids=[{g:stash(),tag:'stash'}, ...carried().map(g=>({g,tag:'carried'}))];
-    for(const g of extGrids()) grids.push({g,tag:'ext'});
-    for(const {g,tag} of grids){ const it=g.find(uid); if(it) return {where:'grid', grid:g, tag, item:it}; }
+    const roots=[{g:stash(),tag:'stash'}, ...carried().map(g=>({g,tag:'carried'}))];
+    for(const g of extGrids()) roots.push({g,tag:'ext'});
+    for(const {g,tag} of roots){ for(const grid of nestedGrids(g)){ const it=grid.find(uid); if(it) return {where:'grid', grid, tag, item:it}; } }
     return null;
   }
   function removeFrom(loc){
@@ -158,9 +183,16 @@ export const Inventory = (function(){
     else if(loc.where==='equip'){ S.profile.equip[loc.slot]=item; }
     else if(loc.where==='extequip' && ext&&ext.equip){ ext.equip[loc.slot]=item; }
   }
+  // Containment guard: a container can never go into itself or any grid nested
+  // inside it (that would orphan/dupe the whole subtree). True = the move is illegal.
+  function wouldNest(item, toGrid){
+    if(!isContainer(item) || !toGrid) return false;
+    return nestedGrids(item.inst.container).includes(toGrid);
+  }
   // drag/drop move: detach from wherever it is, place into target grid at cell; rollback on failure
   function move(uid, toGrid, x, y, rot){
     const loc=locate(uid); if(!loc) return false; const item=loc.item; const ox=item.x, oy=item.y, orot=item.rot;
+    if(wouldNest(item, toGrid)) return false;   // refuse putting a container inside itself
     removeFrom(loc);
     if(placeAt(item, toGrid, x, y, rot)){ Events.emit('inv:changed'); return true; }
     item.x=ox; item.y=oy; item.rot=orot; restore(loc, item);
@@ -169,6 +201,7 @@ export const Inventory = (function(){
   // move into best free spot of a grid (used by "take all" / shift-click)
   function quickTo(uid, toGrid){
     const loc=locate(uid); if(!loc) return false; const item=loc.item;
+    if(wouldNest(item, toGrid)) return false;   // refuse putting a container inside itself
     removeFrom(loc);
     if(toGrid.add(item)===0){ Events.emit('inv:changed'); return true; }
     restore(loc, item);
@@ -181,7 +214,8 @@ export const Inventory = (function(){
   function quickToAny(uid, grids){
     const loc=locate(uid); if(!loc) return false; const item=loc.item;
     const seen=new Set(); const cands=[];
-    for(const g of (grids||[])){ if(g && !seen.has(g)){ seen.add(g); cands.push(g); } }
+    // skip null/dupes AND any grid the item would nest inside (its own subtree)
+    for(const g of (grids||[])){ if(g && !seen.has(g) && !wouldNest(item,g)){ seen.add(g); cands.push(g); } }
     if(!cands.length) return false;
     removeFrom(loc);
     for(const g of cands){ if(g.add(item)===0){ Events.emit('inv:changed'); return true; } }
@@ -291,5 +325,5 @@ export const Inventory = (function(){
     for(const p of pieces){ const it=p.it; it.inst.dura=Math.max(0, (typeof it.inst.dura==='number'?it.inst.dura:it.def.maxDura) - loss*(p.dr/drSum)); }
   }
 
-  return { Grid, carried, stash, addLoot, locate, move, quickTo, quickToAny, rigRelevant, moveTo:quickTo, placeAt, setExternal, externalActor, extGrids, equip, installAttachment, installOn, removeAttachment, dropOrDestroy, sellValue, newItem, slotFor, gearStat, gearTotals, wearGear };
+  return { Grid, carried, stash, addLoot, locate, move, quickTo, quickToAny, rigRelevant, moveTo:quickTo, placeAt, setExternal, externalActor, extGrids, equip, installAttachment, installOn, removeAttachment, dropOrDestroy, sellValue, newItem, slotFor, gearStat, gearTotals, wearGear, isContainer, containerGrid, nestedGrids, parentGridOf };
 })();

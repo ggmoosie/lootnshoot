@@ -21,6 +21,13 @@ DATA.items = {
   bag_small:{name:'Pack 6x6', type:'backpack', grid:[6,6], size:[3,3], value:300, rarity:2},
   bag_large:{name:'Pack 8x8', type:'backpack', grid:[8,8], size:[4,4], value:900, rarity:3},
   rig_basic:{name:'Chest Rig', type:'rig', grid:[4,4], size:[3,3], value:250, rarity:2},
+  // ----- cases: pure STORAGE containers (not worn). Hold their own grid; you stash
+  // them, right-click to open, and pack loose loot inside. Looted from the world or
+  // bought; they organise the stash and carry as a unit. type:'case' is non-equippable
+  // (slotFor returns null) so a case is only ever a grid you open, never gear. -----
+  case_ammo:{name:'Ammo Case', type:'case', grid:[4,4], size:[2,2], value:700, rarity:3},
+  case_item:{name:'Item Case', type:'case', grid:[5,5], size:[2,3], value:1500, rarity:4},
+  case_doc:{name:'Document Case', type:'case', grid:[3,2], size:[1,2], value:500, rarity:3},
   med_bandage:{name:'Bandage', type:'med', heal:25, cure:'bleed', size:[1,1], stack:6, value:40, rarity:1},
   med_kit:{name:'Med Kit', type:'med', heal:80, cure:'bleed', size:[1,2], value:220, rarity:2},
   stim:{name:'Combat Stim', type:'med', heal:15, buff:'speed', size:[1,1], value:300, rarity:3},
@@ -110,9 +117,15 @@ DATA.loot = {
     {id:'med_bandage',w:6,min:1,max:3},{id:'med_kit',w:5},{id:'food_ration',w:4,min:1,max:2},{id:'stim',w:3},{id:'mat_elec',w:2},
   ],
   cont_safe:[
-    {id:'val_cash',w:6,min:2,max:5},{id:'val_gold',w:4},{id:'key_office',w:3},{id:'att_scope',w:2},{id:'arm_lvl4',w:1},{id:'wpn_dmr',w:1},{id:'drone_kit',w:1},
+    {id:'val_cash',w:6,min:2,max:5},{id:'val_gold',w:4},{id:'key_office',w:3},{id:'att_scope',w:2},{id:'arm_lvl4',w:1},{id:'wpn_dmr',w:1},{id:'drone_kit',w:1},{id:'case_doc',w:1},
   ],
 };
+// cases enter the world as rare finds (weapon crates / safes / rare caches). They
+// roll as a container item that may arrive with a little loot already packed inside
+// (see Loot.roll → seedContainer), so opening one in the stash is worthwhile.
+DATA.loot.crate_rare.push({id:'case_ammo',w:1},{id:'case_item',w:1});
+DATA.loot.cont_weapon.push({id:'case_ammo',w:1});
+DATA.loot.cont_safe.push({id:'case_item',w:1});
 
 // ----- container archetypes: searchable world loot (lockers/crates/safes). -----
 DATA.containers = {

@@ -12,9 +12,20 @@ import { World } from "./world.js";
 
 export const Loot = (function(){
   let pickups=[], corpses=[], containers=[];
+  // loose fillers a looted container can arrive pre-packed with (NEVER another
+  // container — keeps nesting shallow + deterministic; no infinite container chains).
+  const CASE_FILL=['ammo_556','ammo_9mm','ammo_762','med_bandage','val_cash','mat_elec','mat_scrap'];
+  // seed a freshly-rolled container item with 0–3 loose items so opening it in the
+  // stash is worthwhile. Uses Grid.add (capacity-respecting; ignores overflow).
+  function seedContainer(item){
+    const g=item.inst&&item.inst.container; if(!g) return item;
+    const n=Math.floor(Math.random()*3)+ (item.def.type==='case'?1:0); // cases skew fuller
+    for(let i=0;i<n;i++){ const id=CASE_FILL[Math.floor(Math.random()*CASE_FILL.length)]; const fill=newItem(id, DATA.items[id].stack>1?(5+Math.floor(Math.random()*20)):1); if(fill) g.add(fill); }
+    return item;
+  }
   function roll(tableId){
     const tbl=DATA.loot[tableId]; const total=tbl.reduce((a,b)=>a+b.w,0); let r=Math.random()*total;
-    for(const e of tbl){ r-=e.w; if(r<=0){ const qty=e.min?(e.min+Math.floor(Math.random()*(e.max-e.min+1))):1; return newItem(e.id,qty); } }
+    for(const e of tbl){ r-=e.w; if(r<=0){ const qty=e.min?(e.min+Math.floor(Math.random()*(e.max-e.min+1))):1; const it=newItem(e.id,qty); return it&&it.inst&&it.inst.container?seedContainer(it):it; } }
     return newItem(tbl[0].id,1);
   }
   function clear(){ pickups=[]; corpses=[]; containers=[]; }
