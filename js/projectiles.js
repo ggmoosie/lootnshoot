@@ -54,6 +54,51 @@ export const Projectiles = (function(){
   // Always a frag, exactly as before — Weapons already consumed the nade_frag.
   function spawnGrenade(){ spawnThrown('frag'); }
 
+  // ---- ENEMY grenade toss (added: feat/lns-ai-grenades) ----------------------
+  // enemies.js calls this to LOB a frag from `from` toward `target` (both
+  // T.Vector3-ish {x,y,z}). Unlike the player throw (camera-relative straight
+  // toss), this solves a ballistic ARC so it drops onto the target's position,
+  // and paints a visible landing TELEGRAPH so the player can dodge. The airborne
+  // mesh keeps the exact frag signature (olive SphereGeometry r=0.15,
+  // MeshStandardMaterial) so enemies.js liveGrenade() still sniffs it out and the
+  // whole squad scatters from it. Detonation reuses effFrag -> damages enemies AND
+  // the player, identical to a player frag.
+  const GNADE_G = 20; // must match the gravity used in update() below
+  function enemyThrow(from, target){
+    const def = tdef('frag');
+    const cfg = DATA.enemyGrenade || {};
+    const fy = (from.y!=null ? from.y : 1.4);
+    const ty = 0.15; // aim at the ground at the target
+    const dx = target.x - from.x, dz = target.z - from.z;
+    const R = Math.hypot(dx, dz) || 0.001;
+    const vH = Math.max(6, cfg.arcSpeed || 17);
+    const t = R / vH;                                  // time to cover the ground gap
+    const vY = (ty - fy + 0.5*GNADE_G*t*t) / t;        // vertical so it lands at ty at time t
+    const vel = new T.Vector3((dx/R)*vH, vY, (dz/R)*vH);
+    const mesh = new T.Mesh(
+      new T.SphereGeometry(0.15,8,8),
+      new T.MeshStandardMaterial({ color:0x2f3a22 })   // frag look, no emissive (matches player frag)
+    );
+    mesh.position.set(from.x, fy, from.z); GFX.world.add(mesh);
+    // give it a fuse that roughly matches the flight so it air/ground bursts on
+    // arrival rather than rolling forever (clamped to the def fuse as an upper bound).
+    const fuse = Math.min(def.fuse || 2.4, t + 0.5);
+    live.push({ mesh, kind:'frag', def, vel, t:0, fuse, enemy:true });
+    // landing telegraph: a flat pulsing ring on the ground at the predicted spot.
+    spawnTelegraph(target.x, target.y, target.z, def.radius, t, cfg.markerColor||0xff5a1f);
+    if(def.noise){ try{ Audio.play('ui'); }catch(_){ } }   // faint "pin pulled" tick
+  }
+
+  // pulsing ground ring that marks where an enemy frag will land. Distinct
+  // geometry (RingGeometry) + MeshBasicMaterial so it never trips liveGrenade().
+  function spawnTelegraph(x, y, z, radius, life, color){
+    const r=Math.max(1, radius);
+    const ring=new T.Mesh(new T.RingGeometry(r*0.55, r, 24),
+      new T.MeshBasicMaterial({ color, transparent:true, opacity:0.0, side:T.DoubleSide, depthWrite:false }));
+    ring.rotation.x=-Math.PI/2; ring.position.set(x, 0.06, z); GFX.world.add(ring);
+    zones.push({ kind:'telegraph', mesh:ring, dur:Math.max(0.4, life+0.5), t:0 });
+  }
+
   // ---- detonation effects ----------------------------------------------------
   function detonate(g){
     const p=g.mesh.position.clone(); const def=g.def, kind=g.kind;
@@ -125,7 +170,7 @@ export const Projectiles = (function(){
       g.vel.y-=20*dt; g.mesh.position.addScaledVector(g.vel,dt);
       const grounded=g.mesh.position.y<=0.15;
       if(grounded){ g.mesh.position.y=0.15; }
-      const fuse=g.def.fuse||3;
+      const fuse=g.fuse!=null?g.fuse:(g.def.fuse||3);
       // frag detonates on ground OR fuse (matches old behavior of t>3 / y<=.15);
       // others detonate on fuse, and frag/incendiary also on contact.
       const pop = g.t>=fuse || (grounded && (g.kind==='frag'||g.kind==='incendiary'||g.kind==='smoke'));
@@ -136,7 +181,11 @@ export const Projectiles = (function(){
       const pp=GFX.yaw.position; let inSmoke=false;
       for(let i=zones.length-1;i>=0;i--){ const z=zones[i]; z.t+=dt; const remain=z.dur-z.t;
         // grow-in then hold then fade-out (cosmetic)
-        if(z.kind==='smoke'){
+        if(z.kind==='telegraph'){
+          // pulse the warning ring; pulse quickens as detonation nears (urgency cue)
+          const urgency=1+ (1-Math.max(0,remain)/Math.max(0.001,z.dur))*5;
+          z.mesh.material.opacity=0.35+0.4*Math.abs(Math.sin(Clock.now*urgency*2.4));
+        } else if(z.kind==='smoke'){
           const tIn=Math.min(1, z.t/0.6), tOut=Math.min(1, Math.max(0,remain)/z.fade);
           z.mesh.material.opacity=0.55*tIn*tOut;
           if(pp.distanceTo(z.pos)<z.radius) inSmoke=true;
@@ -206,5 +255,5 @@ export const Projectiles = (function(){
   function clear(){ for(const z of zones){ try{ GFX.world.remove(z.mesh); }catch(_){ } } zones.length=0; live.length=0; }
   function selectedKind(){ return selected; }
 
-  return { spawnGrenade, spawnThrown, update, clear, cycleSelected, throwSelected, selectedKind, carriedKinds };
+  return { spawnGrenade, spawnThrown, enemyThrow, update, clear, cycleSelected, throwSelected, selectedKind, carriedKinds };
 })();

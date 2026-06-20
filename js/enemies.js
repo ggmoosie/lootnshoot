@@ -18,6 +18,7 @@ import { Audio } from "./audio.js";
 import { World } from "./world.js";
 import { Player } from "./player.js";
 import { Loot } from "./loot.js";
+import { Projectiles } from "./projectiles.js";
 
 export const Enemies = (function(){
   const ray=new T.Raycaster();
@@ -26,7 +27,16 @@ export const Enemies = (function(){
   let coverPts=[]; let coverStamp=-1;
   const EYE=1.5, COVER_H=1.1; // sample heights: standing eye vs. crouched-behind-cover
 
-  function clear(){ mobs=[]; coverPts=[]; coverStamp=-1; }
+  // --- squad combat memory (feat/lns-ai-grenades) ---------------------------
+  // The squad shares a single "last-known player position" — updated whenever ANY
+  // alert enemy has LOS. Grenade flushes + post-kill searches aim at this point
+  // so the squad coordinates instead of each mob acting blind.
+  const lastKnown=new T.Vector3(); let haveLastKnown=false; let lastKnownAt=-99;
+  // player velocity (for leading grenade throws), sampled frame-to-frame.
+  const prevPP=new T.Vector3(); let havePrevPP=false; const playerVel=new T.Vector3();
+  let nextSquadNade=0; // squad-wide grenade cooldown floor so mobs don't all throw at once
+
+  function clear(){ mobs=[]; coverPts=[]; coverStamp=-1; haveLastKnown=false; havePrevPP=false; nextSquadNade=0; }
   function list(){ return mobs; }
   function hitMeshes(){ const a=[]; for(const e of mobs) if(!e.dead) a.push(...e.parts); return a; }
   function aliveCount(){ return mobs.filter(e=>!e.dead).length; }
@@ -118,6 +128,9 @@ export const Enemies = (function(){
     const helmet = (Math.random()<(k.helmet||0)) ? 'helm_lvl2' : null;
     return { wpn, att, armor, helmet, cal:wDef.cal };
   }
+  // how many frags this individual spawns carrying (per-role odds from DATA).
+  function rollNades(r){ const n=r.nades; if(!n) return 0; return (Math.random()<(n.chance||0))?(n.count||1):0; }
+
   function spawn(roleId,x,z){
     const r=DATA.enemies[roleId];
     const g=new T.Group();
@@ -140,9 +153,14 @@ export const Enemies = (function(){
       strafeDir:Math.random()<.5?-1:1, strafeT:0, dead:false,
       // --- combat AI state ---
       mag:wDef.mag, ammo:wDef.mag, reload:wDef.reload, reloading:false, reloadEnd:0,
-      hurtUntil:0, cover:null, peek:null, posture:'engage', // engage | tocover | peek | flank
+      hurtUntil:0, cover:null, peek:null, posture:'engage', // engage | tocover | peek | flank | search
       role2:null, flankSide:Math.random()<.5?1:-1, peekSide:Math.random()<.5?1:-1,
-      sawPlayer:false, nextCover:0 };
+      sawPlayer:false, nextCover:0,
+      // --- grenades + suppression + search (feat/lns-ai-grenades) ---
+      nades: rollNades(r), nextNade:0, cooking:0, cookAim:null,   // throwables + windup state
+      suppress:0,                                                 // 0..1 incoming-fire suppression meter
+      losDeniedSince:0,                                           // when we lost LOS to a known target
+      searchUntil:0, searchPt:null };
     torso.userData={enemy:e,part:'torso'}; head.userData={enemy:e,part:'head'}; legs.userData={enemy:e,part:'legs'};
     mobs.push(e); return e;
   }
@@ -169,6 +187,25 @@ export const Enemies = (function(){
 
   Events.on('alert', a=>{ for(const e of mobs){ if(e.dead) continue; if(e.group.position.distanceTo(a.pos)<a.radius){ e.alert=true; e.lastSeen=Clock.now; e.home.copy(a.pos);} } });
 
+  // ---------- POST-KILL: regroup + search the last-known position --------------
+  // When a squadmate drops, nearby survivors don't freeze: they go alert, send out
+  // an alert pulse from the body, and SEARCH toward where the player was last seen
+  // (or the death spot if we never had a fix) for a while before standing down.
+  Events.on('enemy:killed', dead=>{
+    if(!dead || !dead.group) return;
+    const R=DATA.squadReact||{};
+    const deathPos=dead.group.position.clone();
+    const anchor = haveLastKnown ? lastKnown : deathPos; // hunt the player, fall back to the body
+    if(R.alertOnKill) Events.emit('alert',{ pos:deathPos, radius:R.alertOnKill });
+    for(const e of mobs){ if(e.dead || e===dead) continue;
+      if(e.group.position.distanceTo(deathPos) > (R.regroupRadius||26)) continue;
+      e.alert=true; e.lastSeen=Math.max(e.lastSeen, Clock.now); // refresh so they don't instantly time out
+      e.searchUntil=Clock.now+(R.searchTime||7.5);
+      const sr=(R.searchRadius||9);
+      e.searchPt=new T.Vector3(anchor.x+(Math.random()*2-1)*sr, 0, anchor.z+(Math.random()*2-1)*sr);
+    }
+  });
+
   // ---------- GRENADE DETECTION (runtime; projectiles.js untouched) ----------
   // The player's frag is a tiny olive SphereGeometry (r=0.15, MeshStandardMaterial)
   // parented to GFX.world while airborne. We sniff it out by that signature so
@@ -188,13 +225,121 @@ export const Enemies = (function(){
   }
   const NADE_DANGER = DATA.items.nade_frag.radius + 5; // react inside blast+buffer
 
+  // ---------- SUPPRESSION: detect player tracers whipping past an enemy --------
+  // The window manager owns no per-shot event, so we read the world: every shot
+  // (player OR enemy) drops a short-lived T.Line tracer into GFX.world via
+  // fxTracer. We TAG our own enemy tracers (tagEnemyTracer) the instant we add
+  // them; anything left untagged is incoming fire. A round passing within
+  // suppression.missRadius of an enemy — without having hit it — pins + rattles
+  // them. We mark each line "counted" so it only suppresses once.
+  function tagEnemyTracer(){
+    const ws=GFX.world; if(!ws||!ws.children||!ws.children.length) return;
+    const last=ws.children[ws.children.length-1];
+    if(last && last.type==='Line') last.userData.enemyTracer=true;
+  }
+  const SUP = DATA.suppression || {};
+  // shortest distance from point P to segment AB, all in the XZ plane.
+  function segDistXZ(px,pz, ax,az, bx,bz){
+    const abx=bx-ax, abz=bz-az; const apx=px-ax, apz=pz-az;
+    const len2=abx*abx+abz*abz; let t = len2>1e-6 ? (apx*abx+apz*abz)/len2 : 0;
+    t=Math.max(0,Math.min(1,t)); const cx=ax+abx*t, cz=az+abz*t;
+    return Math.hypot(px-cx, pz-cz);
+  }
+  // scan incoming tracers once per tick; bump suppression on near-misses.
+  function applySuppression(){
+    const ws=GFX.world; if(!ws||!ws.children) return;
+    const miss=SUP.missRadius||2.6;
+    for(const c of ws.children){
+      if(c.type!=='Line') continue;
+      if(c.userData.enemyTracer || c.userData.supCounted) continue; // ours, or already scored
+      const g=c.geometry; const pos=g&&g.attributes&&g.attributes.position;
+      if(!pos || pos.count<2) continue;
+      const ax=pos.getX(0), az=pos.getZ(0), bx=pos.getX(1), bz=pos.getZ(1);
+      c.userData.supCounted=true; // count this round exactly once
+      for(const e of mobs){ if(e.dead) continue;
+        const ep=e.group.position;
+        // skip if the round actually struck this enemy this frame (that's a hit, handled by damage())
+        if(Clock.now<e.hurtUntil && e.lastSeen===Clock.now) continue;
+        if(segDistXZ(ep.x,ep.z, ax,az, bx,bz) < miss){
+          e.suppress=Math.min(SUP.max||1, e.suppress + (SUP.perMiss||0.34));
+          e.alert=true; e.lastSeen=Math.max(e.lastSeen, Clock.now-0.01);
+        }
+      }
+    }
+  }
+  // accuracy after suppression (worse when pinned) — clamped to a floor.
+  function suppressedAccuracy(e){
+    if(e.suppress<=0) return e.accuracy;
+    const floor=SUP.accuracyFloor!=null?SUP.accuracyFloor:0.35;
+    const k=1-(1-floor)*Math.min(1,e.suppress);
+    return e.accuracy*k;
+  }
+
+  // ---------- GRENADE THROW DECISION ------------------------------------------
+  // An alert enemy lobs a frag when the player is a hard target: either we've LOST
+  // line of sight to a known position (player ducked behind cover) for long enough,
+  // OR the squad is grouped up on one spot and can't close. Gated by per-enemy +
+  // squad-wide cooldowns, throwing range, and a visible cook windup (telegraph).
+  function wantsGrenade(e, ep, dist, see, groupedCount){
+    const G=DATA.enemyGrenade||{};
+    if(e.nades<=0) return false;
+    if(e.cooking) return false;                       // already winding up
+    if(Clock.now<e.nextNade || Clock.now<nextSquadNade) return false;
+    if(e.reloading || e.suppress>=(SUP.pinAt||0.5)) return false; // can't throw while pinned/reloading
+    if(!haveLastKnown) return false;
+    const tx=lastKnown.x, tz=lastKnown.z;
+    const tdist=Math.hypot(tx-ep.x, tz-ep.z);
+    if(tdist<(G.minRange||8) || tdist>(G.maxRange||34)) return false;
+    // reason 1: target known but unseen for a beat (flush the camper)
+    const losDenied = !see && e.losDeniedSince>0 && (Clock.now-e.losDeniedSince)>=(G.losDeniedFor||1.4);
+    // reason 2: squad is stacked on this target and stalled — someone cooks one
+    const grouped = groupedCount>=(G.groupedMin||2) && !see;
+    if(!(losDenied || grouped)) return false;
+    return true;
+  }
+  // begin the cook windup: a telegraph the player can read before it flies.
+  function startCook(e, dist){
+    const G=DATA.enemyGrenade||{};
+    e.cooking=Clock.now+(G.cookTime||1.15);
+    // lock the aim at the squad's last-known spot, led by the player's velocity
+    const lead=G.leadFactor||0.35;
+    e.cookAim=new T.Vector3(
+      lastKnown.x + playerVel.x*lead,
+      0.15,
+      lastKnown.z + playerVel.z*lead
+    );
+    // throwers chirp the same "grenade" callout so the player hears it coming out
+    if(dist<70) Audio.callout('grenade');
+  }
+  // release the frag once the windup completes.
+  function releaseCook(e){
+    const G=DATA.enemyGrenade||{};
+    const ep=e.group.position;
+    const from=new T.Vector3(ep.x, 1.5, ep.z);
+    const err=G.aimError||2.2;
+    const aim=(e.cookAim||lastKnown).clone();
+    aim.x+=(Math.random()*2-1)*err; aim.z+=(Math.random()*2-1)*err;
+    try{ Projectiles.enemyThrow(from, aim); }catch(_){ }
+    e.nades--; e.cooking=0; e.cookAim=null;
+    e.nextNade=Clock.now+(G.cooldown||9);
+    nextSquadNade=Clock.now+(G.squadCooldown||4.5);
+  }
+
   function update(dt){
     if(S.mode!==MODE.RAID) return;
     const pp=GFX.yaw.position; GFX.camera.getWorldPosition(camW);
 
+    // player velocity (for leading grenade throws); smoothed a touch.
+    if(havePrevPP && dt>0){ const vx=(pp.x-prevPP.x)/dt, vz=(pp.z-prevPP.z)/dt;
+      playerVel.x+=(vx-playerVel.x)*0.4; playerVel.z+=(vz-playerVel.z)*0.4; }
+    prevPP.copy(pp); havePrevPP=true;
+
     // squad-level intel computed once per tick (cheap; small mob counts)
     const nade=liveGrenade(); const nadePos = nade? nade.position : null;
+    applySuppression();                       // incoming near-misses -> per-enemy suppression
     assignRoles(pp);
+    // how many alert enemies are stacked up engaging (drives grouped grenade use)
+    let groupedCount=0; for(const e of mobs){ if(!e.dead && e.alert && e.group.position.distanceTo(pp)<(e.def.range+10)) groupedCount++; }
 
     for(const e of mobs){ if(e.dead) continue;
       e.bar.lookAt(camW); e.barBg.lookAt(camW);
@@ -202,9 +347,18 @@ export const Enemies = (function(){
       const see=dist<e.def.range && los(ep,pp);
       if(see){
         e.alert=true; e.lastSeen=Clock.now; e.home.copy(pp);
+        e.losDeniedSince=0; e.searchUntil=0; e.searchPt=null; // we can see them — no need to search
+        // refresh the squad's shared last-known player position
+        lastKnown.copy(pp); haveLastKnown=true; lastKnownAt=Clock.now;
         if(!e.sawPlayer){ e.sawPlayer=true; if(dist<60) Audio.callout('contact'); } // "Contact!" first spot
         if(e.def.alertRadius) Events.emit('alert',{pos:pp.clone(),radius:e.def.alertRadius});
+      } else if(e.alert && haveLastKnown){
+        // alert but no LOS: remember when we lost the player (gates the flush-frag)
+        if(e.losDeniedSince===0) e.losDeniedSince=Clock.now;
       }
+
+      // suppression bleeds off whenever rounds aren't whipping past
+      if(e.suppress>0){ e.suppress=Math.max(0, e.suppress-(SUP.decay||0.55)*dt); }
 
       // ----- reload bookkeeping (dry mag -> reload, duck while doing it) -----
       if(e.reloading && Clock.now>=e.reloadEnd){ e.reloading=false; e.ammo=e.mag; }
@@ -217,11 +371,25 @@ export const Enemies = (function(){
         // ----- decide posture: cover when grenade/hurt/reloading; else engage/flank -----
         const grenadeNear = nadePos && ep.distanceTo(nadePos)<NADE_DANGER;
         if(grenadeNear && !e._nadeCalled){ e._nadeCalled=Clock.now; if(dist<70) Audio.callout('grenade'); }
-        if(!grenadeNear && e._nadeCalled && Clock.now-e._nadeCalled>2) e._nadeCalled=0;
+        if(!grenadeNear){ if(e._nadeCalled && Clock.now-e._nadeCalled>2) e._nadeCalled=0; }
+        // a frag landing close FLUSHES enemies out of their hole: drop cover/peek so
+        // they relocate, and the blast pressure rattles them (suppression bump).
+        if(grenadeNear && !e._nadeFlushed){ e._nadeFlushed=Clock.now;
+          e.cover=null; e.peek=null; e.cooking=0; e.cookAim=null; // panic-drop a cook if one was incoming
+          e.suppress=Math.min(SUP.max||1, e.suppress+(SUP.perBlast||0.6)); }
+        if(!grenadeNear) e._nadeFlushed=0;
 
+        // ----- GRENADE: cook a frag at a hard target, or release a cooked one -----
+        if(e.cooking){
+          if(Clock.now>=e.cooking) releaseCook(e);   // windup done -> it flies
+        } else if(wantsGrenade(e, ep, dist, see, groupedCount)){
+          startCook(e, dist);                        // begin the telegraph windup
+        }
+
+        const pinned = e.suppress>=(SUP.pinAt||0.5);  // heavy fire = hug cover, no peeking
         const reloadingOrHurt = e.reloading || Clock.now<e.hurtUntil;
         const exposed = !sheltered(ep.x,ep.z,pp);
-        const wantCover = grenadeNear || (reloadingOrHurt && e.def.behavior!=='rush');
+        const wantCover = grenadeNear || pinned || (reloadingOrHurt && e.def.behavior!=='rush');
 
         // rushers ignore cover (existing behavior preserved); everyone else may use it
         let mv=new T.Vector3();
@@ -235,6 +403,15 @@ export const Enemies = (function(){
           }
           if(dC>0.6){ toC.normalize(); mv.add(toC); }
           e.posture='tocover';
+        } else if(!see && e.searchUntil>Clock.now && e.searchPt){
+          // SEARCH: a teammate died — sweep toward the player's last-known spot,
+          // re-rolling a nearby point on arrival so they fan out and clear the area.
+          const toS=tmp.set(e.searchPt.x-ep.x,0,e.searchPt.z-ep.z); const dS=toS.length();
+          if(dS<1.4){
+            const R=(DATA.squadReact&&DATA.squadReact.searchRadius)||9;
+            e.searchPt=new T.Vector3(lastKnown.x+(Math.random()*2-1)*R, 0, lastKnown.z+(Math.random()*2-1)*R);
+          } else { toS.normalize(); mv.add(toS.multiplyScalar(0.9)); }
+          e.posture='search';
         } else if(e.role2==='flank' && !see){
           // FLANK: arc around the player toward our assigned side until we get LOS
           const toP=tmp.set(pp.x-ep.x,0,pp.z-ep.z); const d=toP.length()||1; toP.multiplyScalar(1/d);
@@ -250,28 +427,38 @@ export const Enemies = (function(){
           const hold=holdRange(e);
           if(d>hold+6) mv.add(toP); else if(d<hold-4) mv.add(toP.clone().multiplyScalar(-1));
           if(e.def.behavior!=='rush') mv.add(strafe.multiplyScalar(0.6));
-          // anchors that already have a sheltered spot edge out to a peek to fire
-          if(e.role2==='anchor' && e.cover && !exposed){
+          // anchors that already have a sheltered spot edge out to a peek to fire —
+          // but a PINNED (suppressed) anchor stays tucked and does NOT peek.
+          if(e.role2==='anchor' && e.cover && !exposed && !pinned){
             if(!e.peek) e.peek=peekSpot(e,e.cover,pp);
             if(e.peek){ const toPk=new T.Vector3(e.peek.x-ep.x,0,e.peek.z-ep.z); if(toPk.length()>0.5){ mv.add(toPk.normalize().multiplyScalar(0.9)); } }
           }
           e.posture='engage';
         }
 
+        // a thrower plants their feet during the cook windup (the telegraph reads
+        // as a stationary wind-up rather than a moving target).
+        if(e.cooking) mv.multiplyScalar(0.15);
         if(mv.lengthSq()>0){ mv.normalize().multiplyScalar(e.def.speed*dt); World.moveActor(ep,mv,0.5); }
 
-        // ----- fire: only with LOS, not while reloading, and not while diving for cover from a grenade -----
-        const canFire = see && !e.reloading && e.ammo>0 && !grenadeNear && Clock.now>e.nextShot;
-        if(canFire){ e.nextShot=Clock.now+e.def.fireDelay; e.ammo--;
-          const hit=Math.random()<e.accuracy;
+        // ----- fire: only with LOS, not while reloading, not while diving for cover
+        // from a grenade, and not mid grenade-cook. Suppression stretches cadence + accuracy.
+        const fireGap = e.def.fireDelay * (1 + (SUP.fireDelayMult||1.8 - 1)*Math.min(1,e.suppress));
+        const canFire = see && !e.reloading && e.ammo>0 && !grenadeNear && !e.cooking && Clock.now>e.nextShot;
+        if(canFire){ e.nextShot=Clock.now+fireGap; e.ammo--;
+          const hit=Math.random()<suppressedAccuracy(e);
           const from=new T.Vector3(ep.x,1.4,ep.z);
           const to = hit ? new T.Vector3(pp.x,1.5,pp.z)
                          : new T.Vector3(pp.x+(Math.random()-.5)*2.4, 1.5+(Math.random()-.5)*1.2, pp.z+(Math.random()-.5)*2.4);
-          fxTracer(from,to,0xff6644);
+          fxTracer(from,to,0xff6644); tagEnemyTracer(); // tag so suppression ignores our own rounds
           if(dist<46) Audio.play(dist<18?'shot':'shotSupp');
           if(hit){ const fall=Math.max(0.35,1-dist/e.def.range); Player.damage(e.dmg*fall, ep); } }
 
-        if(Clock.now-e.lastSeen>8){ e.alert=false; e.cover=null; e.peek=null; e.posture='engage'; }
+        // give up only once LOS has been cold AND any active search has expired.
+        if(Clock.now-e.lastSeen>8 && Clock.now>=e.searchUntil){
+          e.alert=false; e.cover=null; e.peek=null; e.posture='engage';
+          e.cooking=0; e.cookAim=null; e.suppress=0; e.searchPt=null; e.losDeniedSince=0;
+        }
       } else {
         const back=tmp.copy(e.home).sub(ep); back.y=0;
         if(back.length()>0.5){ back.normalize().multiplyScalar(1.2*dt); World.moveActor(ep,back,0.5); }
