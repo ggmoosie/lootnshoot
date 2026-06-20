@@ -10,12 +10,13 @@
 // ALL of them automatically (the persisted session is restored on the next load
 // and onAuthStateChanged fires with the user).
 //
-// Mirrors Riftspawn's auth flow (same project, same compat SDK version) so the
-// account + username handling is consistent. The one deliberate difference:
-// LootNShoot logs in with a REAL email + password (Riftspawn uses a synthetic
-// username@domain email). The username still comes from Firestore
-// `users/{uid}.username` (fallback = the email's local part) exactly like
-// Riftspawn, so the cross-game username is identical.
+// Mirrors Riftspawn's auth flow EXACTLY (same project, same compat SDK version) so
+// the account + username handling is consistent across every game: players sign in
+// with a USERNAME (not an email). Under the hood we map the username to a SYNTHETIC
+// email `<username>@riftspawn-users.local` — the same convention Riftspawn invented —
+// so the SAME username + password unlocks every game on this origin. The display
+// name still comes from Firestore `users/{uid}.username` (fallback = the synthetic
+// email's local part, i.e. the username), exactly like Riftspawn.
 
 import { Events } from "./state.js";
 
@@ -25,6 +26,15 @@ const FBCFG = {
   projectId: "riftspawn",
   appId: "1:670435327804:web:826a9fe90d6f1c970f2839"
 };
+
+// the synthetic-email domain Riftspawn uses so players sign in with a USERNAME, not
+// an email. Same value across games → the same credentials unlock every game.
+const USER_DOMAIN = "@riftspawn-users.local";
+
+// username normalisation + validation (identical rules to Riftspawn / DriftYard).
+const normUser  = s => (s || "").trim().toLowerCase();
+const validUser = u => /^[a-z0-9_]{3,20}$/.test(u);
+const toEmail   = u => u + USER_DOMAIN;
 
 // Internal singleton. `user` is the Firebase user object; `username` is resolved
 // from Firestore (or the email local-part fallback). `ready` flips true after the
@@ -57,17 +67,24 @@ function loggedIn(){ return ACC.ok && !!ACC.user; }
 function current(){ return loggedIn() ? { uid:ACC.user.uid, username:ACC.username || emailLocal(ACC.user) } : null; }
 
 // ---- auth actions (thin wrappers; promises so the UI can await + show errors) ----
-async function signUp(email, pass){
+// Players supply a USERNAME; we map it to the synthetic `<username>@domain` email so
+// the account is the SAME one Riftspawn/DriftYard/etc. use for this username.
+async function signUp(username, pass){
   if(!ACC.ok) throw { code:'offline' };
-  const cred = await ACC.auth.createUserWithEmailAndPassword((email||'').trim(), pass);
-  // Seed users/{uid}.username from the email local-part so it matches the
-  // cross-game convention. Best-effort: a Firestore failure must not fail signup.
-  try{ if(ACC.db) await ACC.db.collection('users').doc(cred.user.uid).set({ username:emailLocal(cred.user), updatedAt:Date.now() }, { merge:true }); }catch(e){ accErr('seed users/'+cred.user.uid,e); }
+  const u = normUser(username);
+  if(!validUser(u)) throw { code:'bad-username' };
+  if(!pass || pass.length < 6) throw { code:'bad-password' };
+  const cred = await ACC.auth.createUserWithEmailAndPassword(toEmail(u), pass);
+  // Seed users/{uid}.username with the chosen username so it matches the cross-game
+  // convention. Best-effort: a Firestore failure must not fail signup.
+  try{ if(ACC.db) await ACC.db.collection('users').doc(cred.user.uid).set({ username:u, updatedAt:Date.now() }, { merge:true }); }catch(e){ accErr('seed users/'+cred.user.uid,e); }
   return cred.user;
 }
-async function signIn(email, pass){
+async function signIn(username, pass){
   if(!ACC.ok) throw { code:'offline' };
-  return ACC.auth.signInWithEmailAndPassword((email||'').trim(), pass);
+  const u = normUser(username);
+  if(!validUser(u)) throw { code:'bad-username' };
+  return ACC.auth.signInWithEmailAndPassword(toEmail(u), pass);
 }
 function signOut(){ if(ACC.ok && ACC.auth) return ACC.auth.signOut(); }
 
@@ -75,12 +92,12 @@ function signOut(){ if(ACC.ok && ACC.auth) return ACC.auth.signOut(); }
 function errText(e, isSignup){
   const c = (e&&e.code) || '';
   if(c==='offline') return 'Login unavailable — playing offline';
-  if(c==='auth/invalid-email') return 'That doesn’t look like a valid email';
-  if(c==='auth/weak-password') return 'Password must be at least 6 characters';
+  if(c==='bad-username') return 'Username must be 3–20 chars: a–z, 0–9, _';
+  if(c==='bad-password' || c==='auth/weak-password') return 'Password must be at least 6 characters';
   if(c==='auth/network-request-failed') return 'Network error — check your connection';
   if(c==='auth/too-many-requests') return 'Too many attempts — try again shortly';
-  if(isSignup) return (c==='auth/email-already-in-use') ? 'That email already has an account' : 'Could not create account';
-  return 'Wrong email or password'; // login: stay generic (enumeration protection)
+  if(isSignup) return (c==='auth/email-already-in-use') ? 'That username is taken' : 'Could not create account';
+  return 'Wrong username or password'; // login: stay generic (enumeration protection)
 }
 
 // ---- auth state changes: resolve the username, then announce on the bus ----
@@ -100,4 +117,4 @@ async function onAuth(u){
   Events.emit('account:changed', current());
 }
 
-export const Account = { init, available, loggedIn, current, signIn, signUp, signOut, errText };
+export const Account = { init, available, loggedIn, current, signIn, signUp, signOut, errText, validUser };

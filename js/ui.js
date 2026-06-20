@@ -145,8 +145,9 @@ export const UI = (function(){
 
   // ---------- ACCOUNT (shared cross-game login) ----------
   // A self-contained block rendered into #acctRow on the start card. Logged-out →
-  // a compact email/password sign-in/up form with a mode toggle; logged-in → the
-  // username + a sign-out link. ENTIRELY OPTIONAL: if Firebase isn't available
+  // a compact username/password sign-in/up form with a mode toggle; logged-in → the
+  // username + a sign-out link. The username is the SAME one used in Riftspawn and
+  // every other game on this origin. ENTIRELY OPTIONAL: if Firebase isn't available
   // (offline / blocked) the whole block is hidden and the game plays local-only.
   let _acctMode='login';   // 'login' | 'signup'
   let _acctBusy=false;
@@ -166,7 +167,7 @@ export const UI = (function(){
     const fs=`width:100%;background:#0c0f12;border:1px solid var(--line);color:var(--text);padding:9px 11px;font-family:var(--mono);font-size:13px;box-sizing:border-box`;
     row.innerHTML=`<div style="margin:2px 0 14px;padding:11px 12px;border:1px solid var(--line);background:#0c0f12">
         <div style="font-family:var(--mono);font-size:11px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;margin-bottom:8px">${isSignup?'Create account':'Sign in'} <span style="color:var(--blue)">· syncs across all the games</span></div>
-        <input id="acctEmail" type="email" autocomplete="email" placeholder="email" style="${fs};margin-bottom:7px">
+        <input id="acctUser" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="20" placeholder="username" style="${fs};margin-bottom:7px">
         <input id="acctPass" type="password" autocomplete="${isSignup?'new-password':'current-password'}" placeholder="password" style="${fs}">
         <div id="acctMsg" style="min-height:16px;font-family:var(--mono);font-size:11px;margin:7px 0 2px;color:var(--dim)"></div>
         <div style="display:flex;gap:8px;align-items:center">
@@ -174,21 +175,21 @@ export const UI = (function(){
         </div>
         <div class="acctLink" id="acctToggle" style="margin-top:9px;font-family:var(--mono);font-size:11px;color:var(--blue);cursor:pointer">${isSignup?'Have an account? Sign in ›':'New here? Create an account ›'}</div>
       </div>`;
-    const email=$('acctEmail'), pass=$('acctPass'), go=$('acctGo'), tog=$('acctToggle'), msg=$('acctMsg');
+    const user=$('acctUser'), pass=$('acctPass'), go=$('acctGo'), tog=$('acctToggle'), msg=$('acctMsg');
     const setMsg=(t,c)=>{ if(msg){ msg.textContent=t||''; msg.style.color=c||'var(--dim)'; } };
     const submit=async ()=>{
       if(_acctBusy) return;
-      const e=(email.value||'').trim(), p=pass.value||'';
-      if(!e||!p){ setMsg('Enter your email and password.','var(--amber)'); return; }
+      const u=(user.value||'').trim(), p=pass.value||'';
+      if(!u||!p){ setMsg('Enter your username and password.','var(--amber)'); return; }
       _acctBusy=true; const lbl=go.innerHTML; go.innerHTML='<span class="k">…</span> Working'; go.classList.add('disabled'); setMsg('');
       try{
-        if(isSignup) await Account.signUp(e,p); else await Account.signIn(e,p);
+        if(isSignup) await Account.signUp(u,p); else await Account.signIn(u,p);
         // success → onAuthStateChanged fires 'account:changed' which re-renders this block
       }catch(err){ setMsg(Account.errText(err,isSignup),'var(--bad)'); _acctBusy=false; go.innerHTML=lbl; go.classList.remove('disabled'); }
     };
     go.onclick=submit;
     pass.onkeydown=ev=>{ if(ev.key==='Enter') submit(); };
-    email.onkeydown=ev=>{ if(ev.key==='Enter') submit(); };
+    user.onkeydown=ev=>{ if(ev.key==='Enter') submit(); };
     if(tog) tog.onclick=()=>{ if(_acctBusy) return; _acctMode=isSignup?'login':'signup'; renderAccount(); };
   }
   // minimal text escape for the username we echo into the menu
