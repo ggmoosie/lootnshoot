@@ -114,6 +114,7 @@
 <div id="ovPause"  class="ov"><div class="card" id="pauseCard"></div></div>
 <div id="ovSettings" class="ov"><div class="card" id="settingsCard"></div></div>
 <div id="ovMod" class="ov"><div class="card wide" id="modCard"></div></div>
+<div id="ovReport" class="ov"><div class="card" id="reportCard"></div></div>
 <div id="ctx"></div>
 <div id="tip"></div>
 <div id="dragGhost"></div>
@@ -126,6 +127,30 @@ if(!window.THREE){
   var sc=document.getElementById('startCard');
   if(sc) sc.innerHTML='<div class="eb">Load Error</div><h1 class="bad">Offline</h1><p class="sub">LootNShoot loads its 3D engine (Three.js) from a CDN, so it needs an internet connection the first time. Reconnect and reload.</p>';
 }
+</script>
+<!-- report widget: lightweight console-error capture. Keeps the last ~5 error
+     messages in a ring buffer (window.__LNS_ERRLOG) so the bug-report form can
+     attach them as triage context. Installed before the game module so it catches
+     early boot errors too. Tiny by design: no deps, never throws, never blocks. -->
+<script>
+window.__LNS_ERRLOG=[];
+(function(){
+  function push(msg){ try{
+    if(!msg)return;
+    msg=String(msg).slice(0,500);
+    window.__LNS_ERRLOG.push(msg);
+    if(window.__LNS_ERRLOG.length>5)window.__LNS_ERRLOG.shift();
+  }catch(_){} }
+  var _onerr=window.onerror;
+  window.onerror=function(message,source,line,col,error){
+    push((error&&error.stack?error.stack.split('\n')[0]:message)+(line?(' @'+(source||'').split('/').pop()+':'+line):''));
+    if(typeof _onerr==='function')try{return _onerr.apply(this,arguments);}catch(_){}
+    return false;
+  };
+  window.addEventListener('unhandledrejection',function(e){ try{ push('unhandled promise: '+((e&&e.reason&&(e.reason.message||e.reason))||'?')); }catch(_){} });
+  var _cerr=console.error.bind(console);
+  console.error=function(){ try{ push(Array.prototype.map.call(arguments,function(a){ return (a&&a.message)?a.message:(typeof a==='object'?JSON.stringify(a):String(a)); }).join(' ')); }catch(_){} return _cerr.apply(console,arguments); };
+})();
 </script>
 <script type="module" src="./js/main.js"></script>
 </body>
