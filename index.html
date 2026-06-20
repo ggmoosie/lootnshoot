@@ -49,34 +49,32 @@
 </div>
 
 <!-- ============ TOUCH — PUBG-style mobile HUD ============ -->
-<!-- Pointer-events:none on the root; every interactive control re-enables it. -->
+<!-- Root is pointer-events:none; every interactive control re-enables it. The
+     design is two thumbs: LEFT = move (floating stick, push-to-edge = sprint),
+     RIGHT = aim/fire + a tight action ring. Everything else is status, kept
+     minimal and out of the thumb zones. -->
 <div id="touch">
 
-  <!-- (1) left floating movement joystick (drag-anywhere origin within its zone) -->
+  <!-- LEFT THUMB — floating movement joystick (drag-anywhere origin in its zone).
+       Pushing the knob to the rim auto-sprints; the rim ring lights to confirm. -->
   <div id="joyZone">
-    <div id="joy"><div id="joyR"></div><div id="joyK"></div></div>
+    <div id="joy"><div id="joyR"></div><div id="joyRun"></div><div id="joyK"></div></div>
   </div>
 
-  <!-- (4) lean / peek buttons, flanking the screen edges at thumb height -->
-  <div id="bLeanL" class="tb lean" aria-label="Lean left">◀</div>
-  <div id="bLeanR" class="tb lean" aria-label="Lean right">▶</div>
-
-  <!-- (2)+(3) right-hand action cluster: big FIRE, ADS scope, and the stance/util pad -->
-  <div id="firepad">
-    <div id="bAds"  class="tb scope" aria-label="Aim down sights">⊕</div>
+  <!-- RIGHT THUMB — combat core: big FIRE, ADS tucked above-left, and a compact
+       action ring (RELOAD / JUMP / CROUCH / USE) hugging the fire button so the
+       thumb sweeps to any of them without leaving home. -->
+  <div id="combat">
     <div id="bFire" class="tb fire" aria-label="Fire"></div>
+    <div id="bAds"  class="tb scope" aria-label="Aim down sights">⊕</div>
+    <div id="bRld"    class="tb act a-rld"    aria-label="Reload"><i>RELOAD</i></div>
+    <div id="bJump"   class="tb act a-jump"   aria-label="Jump"><i>JUMP</i></div>
+    <div id="bCrouch" class="tb act a-crouch" aria-label="Crouch"><i>CROUCH</i></div>
+    <div id="bUse"    class="tb act a-use"    aria-label="Use / interact"><i>USE</i></div>
   </div>
 
-  <div id="actpad">
-    <div id="bUse"    class="tb act" aria-label="Use / interact"><i>USE</i></div>
-    <div id="bNade"   class="tb act" aria-label="Throwable"><i>NADE</i></div>
-    <div id="bRld"    class="tb act" aria-label="Reload"><i>RLD</i></div>
-    <div id="bJump"   class="tb act" aria-label="Jump"><i>JUMP</i></div>
-    <div id="bCrouch" class="tb act" aria-label="Crouch / prone"><i>CRCH</i></div>
-    <div id="bHeal"   class="tb act" aria-label="Med"><i>MED</i></div>
-  </div>
-
-  <!-- (5) weapon / throwable quick-bar, bottom-center -->
+  <!-- weapon / throwable quick-bar, bottom-center: the ONLY place nade & med
+       live (no duplicate buttons elsewhere). Tap to select/use. -->
   <div id="quickbar">
     <div id="qbPrimary"   class="qslot" data-act="primary">
       <span class="qi">①</span><span class="ql">PRIMARY</span><span class="qa">—</span></div>
@@ -88,14 +86,13 @@
       <span class="qi">✚</span><span class="ql">MED</span><span class="qa">0</span></div>
   </div>
 
-  <!-- top-right utility (bag / sprint toggle / fire-mode) -->
+  <!-- top-right utility: fire-mode + bag (sprint is folded into the stick) -->
   <div id="utilpad">
-    <div id="bRun"  class="tb sm" aria-label="Sprint">RUN</div>
     <div id="bMode" class="tb sm" aria-label="Fire mode">AUTO</div>
     <div id="bInv"  class="tb sm" aria-label="Inventory">BAG</div>
   </div>
 
-  <!-- (6) top-left kills / alive readout (minimap is the shared #mapwrap) -->
+  <!-- top-left kills / alive readout (minimap is the shared #mapwrap) -->
   <div id="killbar">
     <div class="kb"><span id="kKills">0</span><i>KILLS</i></div>
     <div class="kbsep"></div>

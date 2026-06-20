@@ -15,7 +15,7 @@ import { Allies } from "./allies.js";
 
 export const Input = (function(){
   const keys={}; const isTouch = window.matchMedia('(pointer: coarse)').matches;
-  const st={ keys, firing:false, ads:false, crouch:false, touchMove:{x:0,y:0}, locked:false, isTouch, lean:0 };
+  const st={ keys, firing:false, ads:false, crouch:false, touchMove:{x:0,y:0}, locked:false, isTouch };
   const SENS=0.0022;
 
   // ---- keybindings (read live from profile.settings, fallback to defaults) ----
@@ -92,17 +92,21 @@ export const Input = (function(){
 
   // ---- touch (PUBG-style mobile HUD) ----
   // Reuses the SAME intents as keyboard/mouse — these handlers only set the
-  // existing st.firing/st.ads/st.crouch/st.lean flags or call the existing
-  // Weapons/Player/World/UI actions. No game logic is rewired here.
+  // existing st.firing/st.ads/st.crouch flags (and the bound sprint/jump keys) or
+  // call the existing Weapons/Player/World/UI actions. No game logic is rewired.
   if(st.isTouch) document.body.classList.add('touch');
   (function touch(){
     const $=id=>document.getElementById(id);
     const cv=GFX.dom;
 
-    // ---- (1) left floating joystick: drag-anywhere origin within #joyZone ----
+    // ---- LEFT THUMB: floating joystick (drag-anywhere origin within #joyZone) ----
+    // Push-to-edge = sprint: when the knob is held near the rim AND aimed mostly
+    // forward, we hold the bound sprint key (so Player.update sprints) and light
+    // the rim ring. This folds sprint into the stick — no separate RUN button.
     const zone=$('joyZone'), joy=$('joy'), knob=$('joyK');
-    let joyId=null,jx=0,jy=0;
+    let joyId=null,jx=0,jy=0,running=false;
     const KMAX=()=>Math.min(joy.clientWidth,joy.clientHeight)*0.5*0.82 || 52;
+    function setRun(on){ if(on===running) return; running=on; keys[code('sprint')]=on; joy.classList.toggle('run',on); }
     function placeJoy(cx,cy){ // recentre the visible base under the thumb (clamped to viewport)
       const r=joy.getBoundingClientRect(), w=r.width, h=r.height;
       const x=clamp(cx-w/2,4,innerWidth-w-4), y=clamp(cy-h/2,4,innerHeight-h-4);
@@ -111,8 +115,11 @@ export const Input = (function(){
     }
     function kn(t){ const max=KMAX(); const dx=t.clientX-jx,dy=t.clientY-jy,d=Math.hypot(dx,dy),cl=Math.min(d,max);
       const nx=d?dx/d*cl:0, ny=d?dy/d*cl:0; knob.style.transform=`translate(calc(-50% + ${nx}px),calc(-50% + ${ny}px))`;
-      st.touchMove.x=nx/max; st.touchMove.y=ny/max; }
-    function resetJoy(){ joyId=null; st.touchMove.x=0; st.touchMove.y=0; knob.style.transform='translate(-50%,-50%)';
+      st.touchMove.x=nx/max; st.touchMove.y=ny/max;
+      // sprint when pushed to the rim (>=88%) and heading forward (not backpedalling)
+      setRun(cl/max>=0.88 && -ny/max>0.4); }
+    function resetJoy(){ joyId=null; st.touchMove.x=0; st.touchMove.y=0; setRun(false);
+      knob.style.transform='translate(-50%,-50%)';
       joy.style.left=''; joy.style.top=''; joy.style.bottom=''; joy.style.opacity=''; }
     zone.addEventListener('touchstart',e=>{ if(joyId!==null) return; e.preventDefault();e.stopPropagation();
       const t=e.changedTouches[0]; joyId=t.identifier; joy.style.opacity='1'; placeJoy(t.clientX,t.clientY); kn(t); },{passive:false});
@@ -141,18 +148,12 @@ export const Input = (function(){
     hold('bFire',()=>st.firing=true,()=>st.firing=false);
     hold('bAds', ()=>st.ads=true,  ()=>st.ads=false);
 
-    // ---- (3) reload / crouch / jump + use / nade / med ----
+    // ---- (3) action ring: reload / jump / crouch / use (nade+med live in the bar) ----
     tap('bRld', ()=>{ if(S.mode===MODE.RAID) Weapons.reload(); });
     tap('bUse', ()=>{ World.interactAny(); });
-    tap('bNade',()=>{ if(S.mode===MODE.RAID) Weapons.throwGrenade(); });
-    tap('bHeal',()=>{ if(S.mode===MODE.RAID) Player.useMed(); });
     hold('bJump',()=>{ keys[code('jump')]=true; },()=>{ keys[code('jump')]=false; });
     const crouchBtn=$('bCrouch');
     crouchBtn.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();st.crouch=!st.crouch;crouchBtn.classList.toggle('active',st.crouch);},{passive:false});
-
-    // ---- (4) lean / peek (presentational camera roll — not collision/movement) ----
-    hold('bLeanL',()=>st.lean=-1,()=>{ if(st.lean<0) st.lean=0; });
-    hold('bLeanR',()=>st.lean= 1,()=>{ if(st.lean>0) st.lean=0; });
 
     // ---- (5) weapon / throwable quick-bar ----
     const qb={ primary:()=>{ if(S.mode===MODE.RAID) Weapons.switchTo('primary'); },
@@ -164,23 +165,10 @@ export const Input = (function(){
       const up=e=>{if(e.cancelable)e.preventDefault();slot.classList.remove('active');}; slot.addEventListener('touchend',up);slot.addEventListener('touchcancel',up);
     });
 
-    // ---- top-right utility: fire-mode, sprint toggle, bag ----
+    // ---- top-right utility: fire-mode, bag (sprint is folded into the stick) ----
     const modeBtn=$('bMode');
     modeBtn.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();if(S.mode===MODE.RAID){Weapons.cycleMode();const w=Weapons.activeItem();if(w)modeBtn.textContent=Weapons.modeOf(w).toUpperCase();}},{passive:false});
-    const run=$('bRun');
-    run.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();const sk=code('sprint');const on=!keys[sk];keys[sk]=on;run.classList.toggle('active',on);},{passive:false});
     tap('bInv',()=>{ if(S.mode===MODE.HUB||S.mode===MODE.RAID) UI.toggleInventory(); });
-
-    // ---- lean roll: lerp camera.rotation.z toward the held lean (purely visual) ----
-    if(st.isTouch){
-      const LEAN=0.18, base=GFX.camera.position.x; let cur=0;
-      (function leanLoop(){ requestAnimationFrame(leanLoop);
-        const target=(S.mode===MODE.RAID? st.lean*LEAN : 0);
-        cur += (target-cur)*0.18;
-        GFX.camera.rotation.z = -cur;
-        GFX.camera.position.x = base + cur*0.9;
-      })();
-    }
   })();
 
   Object.assign(st, { down, code, actionFor, beginCapture, applySettings, relock });
