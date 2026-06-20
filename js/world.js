@@ -2,7 +2,7 @@
 // and solids (bullets/LOS). Doors are interactable actors. Extract pad lives here.
 import { T } from "./three.js";
 import { DATA } from "./data.js";
-import { S, MODE, Events } from "./state.js";
+import { S, MODE, Events, Clock } from "./state.js";
 import { GFX } from "./gfx.js";
 import { keyName, mulberry } from "./util.js";
 import { Audio } from "./audio.js";
@@ -23,8 +23,9 @@ import { Input } from "./input.js";
 export const World = (function(){
   let colliders=[], solids=[], interactables=[], doors=[], mapBoxes=[];
   let extractPos=null, extractMesh=null, extractHold=0;
+  let hostage=null, bomb=null;   // objective actors (rescue NPC / defuse device)
 
-  function reset(){ GFX.clearWorld(); colliders=[]; solids=[]; interactables=[]; doors=[]; mapBoxes=[]; extractPos=null; extractMesh=null; extractHold=0; Enemies.clear(); Loot.clear(); Projectiles.clear(); Harvest.clear(); Allies.clear(); FX.clear(); }
+  function reset(){ GFX.clearWorld(); colliders=[]; solids=[]; interactables=[]; doors=[]; mapBoxes=[]; extractPos=null; extractMesh=null; extractHold=0; hostage=null; bomb=null; Enemies.clear(); Loot.clear(); Projectiles.clear(); Harvest.clear(); Allies.clear(); FX.clear(); }
   function addBox(x,z,w,d,h,color,opt={}){
     const m=new T.Mesh(new T.BoxGeometry(w,h,d), new T.MeshStandardMaterial({color,roughness:opt.rough??.9,metalness:opt.metal??.05}));
     // baseY lets a prop sit ON the terrain heightfield instead of the y=0 plane;
@@ -249,13 +250,97 @@ export const World = (function(){
     const stripe=new T.Mesh(new T.BoxGeometry(6.05,.6,14.05), new T.MeshStandardMaterial({color:0xe8a33d,emissive:0xe8a33d,emissiveIntensity:.25})); stripe.position.set(x,2.6,z+4); GFX.world.add(stripe);
   }
 
-  // ---------- RAID ----------
-  function buildRaid(){
-    reset(); addLights(0x3a4858,0xc8d4e0,1.6); GFX.scene.fog=new T.Fog(0x141a20,60,165);
-    const H=70, i=S.run.stopIndex; const rng=mulberry(0x9e37+i*7919);
-    // terrain uses its OWN seeded rng so its single draw can't shift the layout stream
-    addGround(200,0x2c333b, mulberry(0x5eed+i*2654435));
-    addBox(0,-H,H*2,2,7,0x2c333b); addBox(0,H,H*2,2,7,0x2c333b); addBox(-H,0,2,H*2,7,0x2c333b); addBox(H,0,2,H*2,7,0x2c333b);
+  // ---------- RAID LAYOUTS (world variety) ----------
+  // The arena's BUILDINGS + COVER are arranged by one of three seeded layout
+  // archetypes (DATA.raidLayouts), so stops don't all read as the same random
+  // scatter. Loot / enemies / extract still scatter across the whole arena after
+  // this — these only shape the static geometry. Every layout uses the same
+  // addBox / addBuilding primitives, so colliders / solids / doors / cover and the
+  // multi-room buildings keep working unchanged. `H` = arena half-extent.
+  //
+  // pick the layout for this stop (weighted, off the layout stream so it's stable)
+  function pickLayout(rng,i){
+    const tbl=DATA.raidLayouts||[{id:'scatter',weight:1}];
+    const ws=tbl.map(t=>Math.max(0,(typeof t.weight==='function'?t.weight(i):t.weight)||0));
+    const tot=ws.reduce((a,b)=>a+b,0)||1; let x=rng()*tot;
+    for(let k=0;k<tbl.length;k++){ x-=ws[k]; if(x<=0) return tbl[k].id; }
+    return tbl[tbl.length-1].id;
+  }
+  // a low fence run along an axis (short + thin so it reads as a yard boundary,
+  // not a building wall). knee-to-chest height. `gate` true → punch a 3u opening
+  // at gapOff (a gate); false → a continuous solid run (a plain addBox panel).
+  function addFence(axis,fx,len,fixed,gate,gapOff){
+    const h=1.3, col=0x4a4636, t=0.3;
+    if(gate){ wallWithGap(axis, fx, len, fixed, h, col, gapOff||0, 3.0); }
+    else if(axis==='x'){ addBox(fx, fixed, len, t, h, col); }
+    else { addBox(fixed, fx, t, len, h, col); }
+  }
+  // a small scatter of cover boxes inside a rectangular yard (planted on terrain)
+  function yardCover(cx,cz,w,d,rng,n){
+    for(let k=0;k<n;k++){ const yx=cx+(rng()-.5)*(w-2), yz=cz+(rng()-.5)*(d-2);
+      if(Math.hypot(yx,yz)<14) continue; addBox(yx,yz,1.4,1.4,1.3,0x33392c,{baseY:terrainHeight(yx,yz)}); }
+  }
+
+  // LOT layout: a handful of discrete PLOTS, each = a fenced yard with one
+  // (often multi-room) building on it + a gate + a little yard cover. Plots are
+  // jittered on a coarse grid so they tile the arena without overlapping.
+  function buildLot(H,i,rng){
+    const half=H-14, cell=Math.max(26, (half*2)/ (i>=2?4:3)); // plot pitch
+    const cols=Math.max(2, Math.round((half*2)/cell));
+    const margin=cell*0.5;
+    for(let gx=0;gx<cols;gx++) for(let gz=0;gz<cols;gz++){
+      const px=-half+margin+gx*cell, pz=-half+margin+gz*cell;
+      const jx=px+(rng()-.5)*cell*0.18, jz=pz+(rng()-.5)*cell*0.18;
+      if(Math.hypot(jx,jz)<20) continue;          // keep the spawn ring clear
+      if(rng()<0.18) continue;                     // a few empty/vacant lots
+      const yw=Math.min(cell-4, 16+rng()*4), yd=Math.min(cell-4, 16+rng()*4);
+      // fenced yard (4 runs; the gate side gets the opening, the rest stay solid)
+      const gateSide=Math.floor(rng()*4);
+      addFence('x', jx, yw, jz-yd/2, gateSide===0, (rng()-.5)*yw*0.5); // bottom
+      addFence('x', jx, yw, jz+yd/2, gateSide===1, (rng()-.5)*yw*0.5); // top
+      addFence('z', jx-yw/2, yd, jz, gateSide===2, (rng()-.5)*yd*0.5); // left
+      addFence('z', jx+yw/2, yd, jz, gateSide===3, (rng()-.5)*yd*0.5); // right
+      // the building sits to one side of the yard, leaving open yard space
+      const bw=6+rng()*4, bd=6+rng()*4, bh=4+rng()*4;
+      const bx=jx+(rng()-.5)*(yw-bw-1)*0.6, bz=jz+(rng()-.5)*(yd-bd-1)*0.6;
+      const col=0x363c44+Math.floor(rng()*0x0a0a0a);
+      addBuilding(bx,bz,bw,bd,bh,rng,col);
+      yardCover(jx,jz,yw,yd,rng,1+Math.floor(rng()*2));
+    }
+    // a little loose open-ground cover between the lots so the streets aren't bare
+    for(let c=0;c<8;c++){ const cx=(rng()*2-1)*(H-8), cz=(rng()*2-1)*(H-8); if(Math.hypot(cx,cz)<14) continue; addBox(cx,cz,1.6,1.6,1.5,0x33392c,{baseY:terrainHeight(cx,cz)}); }
+  }
+
+  // STREETS layout: buildings lined up along a central road in two facing rows
+  // (a block). The road is a clear lane down the middle; cover dots the sidewalks.
+  function buildStreet(H,i,rng){
+    const span=(H-16)*2, roadW=10;
+    const lots=Math.max(3, Math.round(span/22));        // buildings per row
+    const step=span/lots;
+    const rowZ=roadW/2 + 7;                              // each row's centre offset from the road
+    // a paved road strip down the middle (visual only — non-colliding slab)
+    addBox(0,0,span,roadW,0.12,0x23282d,{collide:false,solid:false,baseY:0.02});
+    for(let s=0;s<lots;s++){
+      const x=-span/2+step*(s+0.5)+(rng()-.5)*step*0.2;
+      for(const side of [-1,1]){
+        if(rng()<0.12) continue;                        // occasional gap (alley)
+        const z=side*(rowZ+(rng()-.5)*3);
+        if(Math.hypot(x,z)<18) continue;                // keep spawn clear
+        const bw=Math.min(step-3, 8+rng()*5), bd=7+rng()*4, bh=4+rng()*4;
+        const col=0x363c44+Math.floor(rng()*0x0a0a0a);
+        if(rng()<0.78) addBuilding(x,z,bw,bd,bh,rng,col);
+        else addBox(x,z,bw*0.7,bd*0.7,bh,col);          // a few solid blocks for variety
+      }
+      // sidewalk cover flanking the road
+      if(rng()<0.6){ const cz=(roadW/2-0.5)*(rng()<.5?-1:1); addBox(x+(rng()-.5)*step*0.3, cz, 1.4,1.4,1.3,0x33392c,{baseY:terrainHeight(x,cz)}); }
+    }
+    // a couple of cross-street blocks at the ends so it isn't a bare corridor
+    for(let c=0;c<6;c++){ const cx=(rng()*2-1)*(H-10), cz=(rng()*2-1)*(H-10);
+      if(Math.abs(cz)<roadW/2+2 || Math.hypot(cx,cz)<16) continue; addBox(cx,cz,1.6,1.6,1.5,0x33392c,{baseY:terrainHeight(cx,cz)}); }
+  }
+
+  // SCATTER layout: the original — buildings + cover sprinkled across the arena.
+  function buildScatter(H,i,rng){
     const nB=10+i*2;
     for(let b=0;b<nB;b++){ const bx=(rng()*2-1)*(H-12), bz=(rng()*2-1)*(H-12); if(Math.hypot(bx,bz)<16) continue;
       const col=0x363c44+Math.floor(rng()*0x0a0a0a);
@@ -264,6 +349,20 @@ export const World = (function(){
         if(rng()>.4){ const lx=bx+(rng()*8-4), lz=bz+(rng()*8-4); addBox(lx,lz,3+rng()*3,1,1.4,0x2a2f33,{baseY:terrainHeight(lx,lz)}); } } }
     // open-ground cover scatter — seated on the terrain so it reads as planted
     for(let c=0;c<14;c++){ const cx=(rng()*2-1)*(H-8), cz=(rng()*2-1)*(H-8); if(Math.hypot(cx,cz)<10) continue; addBox(cx,cz,1.6,1.6,1.5,0x33392c,{baseY:terrainHeight(cx,cz)}); }
+  }
+
+  // ---------- RAID ----------
+  function buildRaid(){
+    reset(); addLights(0x3a4858,0xc8d4e0,1.6); GFX.scene.fog=new T.Fog(0x141a20,60,165);
+    const H=70, i=S.run.stopIndex; const rng=mulberry(0x9e37+i*7919);
+    // terrain uses its OWN seeded rng so its single draw can't shift the layout stream
+    addGround(200,0x2c333b, mulberry(0x5eed+i*2654435));
+    addBox(0,-H,H*2,2,7,0x2c333b); addBox(0,H,H*2,2,7,0x2c333b); addBox(-H,0,2,H*2,7,0x2c333b); addBox(H,0,2,H*2,7,0x2c333b);
+    // ---- WORLD VARIETY: pick + build a layout for the static geometry ----
+    const layout=pickLayout(rng,i); S.run.layout=layout;
+    if(layout==='lot') buildLot(H,i,rng);
+    else if(layout==='streets') buildStreet(H,i,rng);
+    else buildScatter(H,i,rng);
     // crates
     const commons=5+i, rares=DATA.stops.rareCrates(i);
     for(let c=0;c<commons;c++) crate(rng,false);
@@ -282,9 +381,14 @@ export const World = (function(){
       Enemies.spawn(pool[Math.floor(rng()*pool.length)], ex,ez); }
     // extract
     const ang=rng()*Math.PI*2, ex=Math.cos(ang)*(H-14), ez=Math.sin(ang)*(H-14); makeExtract(ex,ez);
+    // ---- OBJECTIVE props: spawn what the primary objective needs (rescue/defuse).
+    // placed away from the spawn ring + the extract pad so there's a journey.
+    const prim=Objectives.primary&&Objectives.primary();
+    if(prim&&prim.kind==='rescue') spawnHostage(rng,H,ex,ez);
+    else if(prim&&prim.kind==='defuse') spawnBomb(rng,H,ex,ez);
     Player.spawn(0,0,ang);
     S.setMode(MODE.RAID); document.getElementById('threats').style.display='block';
-    UI.setObjective(`Stop ${i+1}`, (Objectives.summary()||'Clear hostiles, loot, reach extract.'), `SECTOR ${String.fromCharCode(65+i)}`);
+    Objectives.refreshLine();
     UI.refreshHUD(); Events.emit('threats:changed');
     UI.banner(`Sector ${String.fromCharCode(65+i)}`, `Stop ${i+1} · ${DATA.stops.count(i)} hostiles`); Audio.play('notify');
     if(!Input.locked && !Input.isTouch) GFX.dom.requestPointerLock();
@@ -298,6 +402,40 @@ export const World = (function(){
     const ring=new T.Mesh(new T.CylinderGeometry(3,3,.2,24,1,true), new T.MeshBasicMaterial({color:0x57c06b,transparent:true,opacity:.4,side:T.DoubleSide})); ring.position.set(x,1.5,z); GFX.world.add(ring);
     const pad=new T.Mesh(new T.CircleGeometry(3,24), new T.MeshBasicMaterial({color:0x57c06b,transparent:true,opacity:.18})); pad.rotation.x=-Math.PI/2; pad.position.set(x,.05,z); GFX.world.add(pad);
     extractPos=new T.Vector3(x,0,z); extractMesh=ring; extractHold=0;
+  }
+
+  // ---- OBJECTIVE PROPS (rescue hostage / defuse bomb) ----------------------
+  // Both are world actors held in module state so update() can drive them (escort
+  // follow / hold meters). Cleared in reset(). Placed via a rejection sample that
+  // keeps them off the spawn ring AND a good distance from the extract pad.
+  function farSpot(rng,H,ex,ez){
+    let x=0,z=0,tr=0;
+    do{ x=(rng()*2-1)*(H-16); z=(rng()*2-1)*(H-16); tr++; }
+    while((Math.hypot(x,z)<24 || Math.hypot(x-ex,z-ez)<26) && tr<40);
+    return {x,z};
+  }
+  function spawnHostage(rng,H,ex,ez){
+    const s=farSpot(rng,H,ex,ez), by=terrainHeight(s.x,s.z);
+    const g=new T.Group(); g.position.set(s.x,by,s.z); GFX.world.add(g);
+    const body=new T.Mesh(new T.CylinderGeometry(0.45,0.5,1.5,10), new T.MeshStandardMaterial({color:0xddb37a,roughness:.8})); body.position.y=0.95; body.castShadow=true; g.add(body);
+    const head=new T.Mesh(new T.SphereGeometry(0.32,12,10), new T.MeshStandardMaterial({color:0xe8c79a,roughness:.7})); head.position.y=1.95; g.add(head);
+    // a soft cyan beacon so the player can spot the hostage at range
+    const beam=new T.Mesh(new T.CylinderGeometry(0.08,0.08,6,8), new T.MeshBasicMaterial({color:0x7afcff,transparent:true,opacity:.35})); beam.position.y=4.5; g.add(beam);
+    hostage={ group:g, pos:new T.Vector3(s.x,1,s.z), hp:60, freed:false, mesh:body, beam };
+    const inter={ pos:hostage.pos, radius:2.6, key:'interact', label:'free hostage',
+      action:()=>{ if(hostage.freed) return; hostage.freed=true; inter.consumed=true; body.material.color.set(0x7afcff); Objectives.freeHostage(); } };
+    interactables.push(inter);
+  }
+  function spawnBomb(rng,H,ex,ez){
+    const s=farSpot(rng,H,ex,ez), by=terrainHeight(s.x,s.z);
+    const g=new T.Group(); g.position.set(s.x,by,s.z); GFX.world.add(g);
+    const crate=new T.Mesh(new T.BoxGeometry(1.4,1.0,1.4), new T.MeshStandardMaterial({color:0x2a2f33,roughness:.7,metalness:.3})); crate.position.y=0.5; crate.castShadow=true; g.add(crate);
+    const light=new T.Mesh(new T.SphereGeometry(0.18,10,8), new T.MeshBasicMaterial({color:0xff4d4d})); light.position.set(0,1.15,0); g.add(light);
+    const beam=new T.Mesh(new T.CylinderGeometry(0.08,0.08,6,8), new T.MeshBasicMaterial({color:0xff4d4d,transparent:true,opacity:.3})); beam.position.y=4.5; g.add(beam);
+    bomb={ group:g, pos:new T.Vector3(s.x,1,s.z), light };
+    // the defuse interact-hold is driven in update() (held while near + key down),
+    // not a single-shot action, so this interactable just provides the prompt slot.
+    interactables.push({ pos:bomb.pos, radius:2.8, key:'interact', label:'defuse device', defuse:true, action:()=>{} });
   }
 
   // interaction: loose items (pickup key) vs containers/doors/stations/bodies (interact key)
@@ -315,14 +453,54 @@ export const World = (function(){
     for(const it of interactables){ if(it.consumed) continue; const d=it.pos.distanceTo(p); if(d<it.radius&&d<best){best=d;near=it;} }
     const ek=keyName(Input.code('interact'));
     if(S.mode===MODE.RAID && extractPos){ const d=Math.hypot(p.x-extractPos.x,p.z-extractPos.z);
-      if(d<3){ UI.prompt(`Hold <b>${ek}</b> to extract ${extractHold>0?'('+Math.ceil(2-extractHold)+')':''}`); return; } else extractHold=0; }
+      if(d<3){
+        if(Objectives.canExtract()) UI.prompt(`Hold <b>${ek}</b> to extract ${extractHold>0?'('+Math.ceil(2-extractHold)+')':''}`);
+        else UI.prompt(`⛔ ${Objectives.gateReason()}`);
+        return;
+      } else extractHold=0;
+    }
+    // defuse device: show a hold prompt with the live progress % (driven in update)
+    if(near && near.defuse){ const f=Math.round(Objectives.defuseFrac()*100); UI.prompt(`Hold <b>${ek}</b> · defuse device ${f>0?'('+f+'%)':''}`); return; }
     if(near){ const kl=keyName((near.key||'interact')==='pickup'?Input.code('pickup'):Input.code('interact')); UI.prompt(`<b>${kl}</b> · ${near.label}`); }
     else UI.prompt(null);
   }
+  // hostage escort: a freed hostage trails the player at a short offset (2D, using
+  // the same collision so it doesn't clip walls), and is delivered when both it and
+  // the player stand on the extract pad. Enemies that crowd a freed hostage chip
+  // its HP; at zero the rescue is lost. (Read-only on Enemies — no AI changes.)
+  function updateHostage(dt){
+    if(!hostage || hostage.dead) return;
+    const p=GFX.yaw.position;
+    if(hostage.freed){
+      // follow: move toward a point a couple metres behind the player
+      const tx=p.x, tz=p.z, hx=hostage.pos.x, hz=hostage.pos.z;
+      const dx=tx-hx, dz=tz-hz, d=Math.hypot(dx,dz)||1e-4;
+      if(d>2.2){ const spd=Math.min(d-2.0, 4.0*dt), step={x:dx/d*spd, z:dz/d*spd};
+        moveActor(hostage.pos, step, 0.5); }
+      hostage.group.position.set(hostage.pos.x, terrainHeight(hostage.pos.x,hostage.pos.z), hostage.pos.z);
+      hostage.group.lookAt(p.x, hostage.group.position.y, p.z);
+      // danger from nearby live enemies
+      let near=0; for(const e of Enemies.list()){ if(e.dead) continue; if(e.group.position.distanceTo(hostage.pos)<5) near++; }
+      if(near){ hostage.hp-=near*8*dt; if(hostage.hp<=0){ hostage.dead=true; hostage.group.visible=false; Objectives.loseHostage(); return; } }
+      // delivery: hostage + player both on the pad
+      if(extractPos && Math.hypot(p.x-extractPos.x,p.z-extractPos.z)<3 && Math.hypot(hostage.pos.x-extractPos.x,hostage.pos.z-extractPos.z)<4){ Objectives.deliverHostage(); }
+    }
+  }
   function update(dt){
     updateInteract();
-    if(S.mode===MODE.RAID && extractPos){ extractMesh.rotation.y+=dt; const p=GFX.yaw.position; const d=Math.hypot(p.x-extractPos.x,p.z-extractPos.z);
-      if(d<3 && Input.keys[Input.code('interact')]){ extractHold+=dt; if(extractHold>=2) Raid.openExtractChoice(); } else extractHold=0; }
+    if(S.mode!==MODE.RAID){ return; }
+    Objectives.tick(dt);
+    updateHostage(dt);
+    if(bomb && bomb.light){ bomb.light.material.color.setHex((Math.floor(Clock.now*3)%2)?0xff4d4d:0x551111); }
+    const p=GFX.yaw.position;
+    // defuse interact-hold: while standing at the device with interact held, drain
+    // the hold; walking off resets it. Completion fires inside advanceDefuse.
+    if(bomb){ const dB=Math.hypot(p.x-bomb.pos.x,p.z-bomb.pos.z);
+      if(dB<2.8 && Input.keys[Input.code('interact')]) Objectives.advanceDefuse(dt);
+      else Objectives.resetDefuse(); }
+    // extract — gated by the primary objective (can't bank until it's done)
+    if(extractPos){ extractMesh.rotation.y+=dt; const d=Math.hypot(p.x-extractPos.x,p.z-extractPos.z);
+      if(d<3 && Objectives.canExtract() && Input.keys[Input.code('interact')]){ extractHold+=dt; if(extractHold>=2) Raid.openExtractChoice(); } else extractHold=0; }
   }
   return { reset, buildHub, buildRaid, moveActor, interact, interactAny, update, addInteract:(o)=>interactables.push(o),
            mapInfo:()=>({boxes:mapBoxes, extract:extractPos?{x:extractPos.x,z:extractPos.z}:null, size:74}), get solids(){return solids;} };

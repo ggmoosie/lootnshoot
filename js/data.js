@@ -504,6 +504,60 @@ if(Array.isArray(DATA.recipes)) DATA.recipes.push(
   {id:'r_9mm_hp', name:'Print 9mm HP (x30)',  station:'printer', out:{id:'ammo_9mm_hp',qty:30}, in:[{id:'mat_filament',qty:2},{id:'mat_scrap',qty:1}]});
 
 /* ════════════════════════════════════════════════════════════════════════════
+   SECTION: RAID OBJECTIVES + WORLD VARIETY  (added by feat/lns-objectives-world)
+   Self-contained content block — appended via assignment so it never collides
+   with the literals above (parallel agents auto-merge). Owns: the PRIMARY raid-
+   objective table (clear / rescue / defuse — one is selected per stop and GATES
+   extraction), the soft-timer pressure knobs, and the procedural LAYOUT table
+   (scatter / lot / streets — picks how a stop's geometry is arranged). NO
+   behavior here — objectives.js + world.js read these. Kept deliberately simpler
+   than a full mission scripting system: a couple of flavors, generated per stop.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+// --- PRIMARY raid objectives. EXACTLY ONE is chosen per stop (objectives.js) and
+//     it GATES extraction (you can't bank the run until `done`). `make(i)` builds
+//     the per-stop instance (label scales with stopIndex i). `kind` selects how
+//     objectives.js drives completion + what world.js must spawn:
+//       clear  : kill every hostile (the classic loop — no extra props spawned).
+//       rescue : a hostage NPC spawns; REACH it (interact to free), then ESCORT/
+//                EXTRACT — it follows you and must be alive at the extract pad.
+//       defuse : a planted device spawns; interact-HOLD for `hold` seconds to
+//                disarm it. (Holds across re-approaches; resets if you walk off.)
+//     `gate:true` marks it extraction-gating (all primaries are). ---
+DATA.raidObjectives = [
+  { id:'clear',  kind:'clear',  weight:i=>2,             gate:true,
+    make:i=>({ label:'Eliminate all hostiles', reward:200+i*120, hold:0 }) },
+  { id:'rescue', kind:'rescue', weight:i=>1.4,           gate:true,
+    make:i=>({ label:'Rescue the hostage & extract them', reward:450+i*180, hold:1.4 }) },
+  { id:'defuse', kind:'defuse', weight:i=>1.4,           gate:true,
+    make:i=>({ label:'Defuse the planted device', reward:420+i*170, hold:4.0 + Math.min(2.5, i*0.6) }) },
+];
+
+// --- soft TIMER pressure. A countdown that does NOT hard-fail the raid (this is
+//     an extraction shooter, not a bomb-defusal puzzle) — instead, when it runs
+//     out the area goes "HOT": a small bonus penalty + a HUD warning + reinforce
+//     flavor. Generous so casual runs are fine; tight enough to push pace. The
+//     bomb/rescue urgency reads off this. seconds scale up with stop size. ---
+DATA.raidTimer = {
+  base: 210,        // seconds on stop 0
+  perStop: 35,      // +seconds per deeper stop (bigger map → more time)
+  warnAt: 45,       // HUD turns urgent under this many seconds left
+  hotPenalty: 0.85, // bag-value multiplier applied once it goes HOT (15% shaved)
+};
+
+// --- procedural LAYOUT archetypes. world.js picks one per stop (weighted, seeded)
+//     so stops don't all read as the same random scatter. Each is a coarse recipe
+//     the generator interprets; tuning knobs only, the geometry lives in world.js.
+//       scatter : the original — buildings/cover sprinkled across the arena.
+//       lot     : a few discrete PLOTS, each = a building + fenced yard + gate.
+//       streets : buildings lined up along a central road (two rows), block feel.
+//     `weight(i)` lets the mix shift by depth if desired (kept flat for now). ---
+DATA.raidLayouts = [
+  { id:'scatter', weight:i=>1.0 },
+  { id:'lot',     weight:i=>1.0 },
+  { id:'streets', weight:i=>1.0 },
+];
+/* ============================================================================
    SECTION: ENEMY AI — GRENADES + SUPPRESSION  (added by feat/lns-ai-grenades)
    Self-contained tuning block — appended via Object.assign / push so it never
    collides with the literals above (parallel agents auto-merge). PURE DATA, no
