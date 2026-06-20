@@ -2,6 +2,7 @@
 // the rig transform via GFX.yaw. Reads Input + Progression-derived stats.
 import { T } from "./three.js";
 import { S, MODE, Events } from "./state.js";
+import { DATA } from "./data.js";
 import { GFX } from "./gfx.js";
 import { Progression } from "./progression.js";
 import { Status } from "./status.js";
@@ -18,10 +19,35 @@ export const Player = (function(){
   let vig=0, stepT=0, velY=0, jumpY=0, grounded=true, movingFlag=false, eyeCur=HEIGHT;
   function spawn(x,z,faceY){ GFX.yaw.position.set(x,HEIGHT,z); GFX.yaw.rotation.y=faceY||0; GFX.pitch.rotation.x=0; }
   function heal(n){ S.player.health=Math.min(S.player.maxHealth, S.player.health+n); Events.emit('player:changed'); }
+
+  // ---- simplified healing + buff consumables (added: feat/lns-throwables-healing)
+  // Kept in their own functions so the damage-mitigation path (damage(), owned by
+  // another agent) is never touched. A consumable now takes a short USE TIME with a
+  // cosmetic progress bar (Status.beginUse) before its effect lands; effect data
+  // comes from DATA.consumables. No hunger/thirst/weight — extraction shooter, not
+  // a survival sim. ----
   function useMed(){
+    if(Status.isUsing()){ return; }                     // one use at a time
     const grids = S.mode===MODE.RAID?Inventory.carried():[Inventory.stash()];
-    for(const g of grids){ const t=g.items.find(i=>i.def.type==='med'); if(t){ heal(t.def.heal); if(t.def.cure) Status.clear('bleed'); if(t.def.buff==='speed') Status.apply('speed',12,1); t.qty--; if(t.qty<=0||!t.def.stack) g.remove(t.uid); UI.toast(`Used ${t.def.name}`,'pos'); Events.emit('inv:changed'); return; } }
-    UI.toast('No meds','neg');
+    let found=null;
+    for(const g of grids){ const t=g.items.find(i=>i.def.type==='med'); if(t){ found={g,t}; break; } }
+    if(!found){ UI.toast('No meds','neg'); return; }
+    const def=found.t.def; const cfg=DATA.consumables[def.id]||{ useTime:0.1, heal:def.heal||0, cure:def.cure, buff:def.buff, buffDur:12, buffMag:1 };
+    // consume the item up-front so it can't be double-used mid-animation
+    found.t.qty--; if(found.t.qty<=0||!found.t.def.stack) found.g.remove(found.t.uid);
+    Events.emit('inv:changed');
+    UI.toast(`Using ${def.name}…`,'neu');
+    Status.beginUse(cfg.useTime, (cfg.name||def.name).toUpperCase(), ()=>applyConsumable(def, cfg));
+  }
+  // land the effect when the use-animation completes (callback from Status).
+  function applyConsumable(def, cfg){
+    if(S.mode!==MODE.RAID && S.mode!==MODE.HUB) return;
+    if(cfg.heal) heal(cfg.heal);
+    if(cfg.regen) Status.apply('regen', cfg.regenDur||5, cfg.regen);          // heal-over-time
+    if(cfg.cure) Status.clear(cfg.cure);
+    if(cfg.buff) Status.apply(cfg.buff, cfg.buffDur||12, cfg.buffMag||1);     // timed buff (speed/stamina)
+    UI.toast(`Used ${def.name}`,'pos');
+    Events.emit('player:changed');
   }
   function damage(n, fromPos){
     if(S.mode!==MODE.RAID) return;
@@ -55,9 +81,12 @@ export const Player = (function(){
     GFX.yaw.position.y = eyeCur + jumpY;
     // footstep noise + faint sound (stealth: crouch near-silent, sprint loud)
     if(moving && grounded && S.mode===MODE.RAID){ stepT-=dt; if(stepT<=0){ stepT=crouch?0.55:sprint?0.28:0.42; Perception.footstep(GFX.yaw.position, sprint, crouch); if(!crouch) Audio.play('step'); } }
-    // stamina
+    // stamina (buff hook: Status.staminaMult boosts recovery, e.g. Focus Shot)
     if(sprint&&moving) S.player.stamina=Math.max(0,S.player.stamina-22*dt);
-    else S.player.stamina=Math.min(S.player.maxStamina, S.player.stamina+14*dt);
+    else S.player.stamina=Math.min(S.player.maxStamina, S.player.stamina+14*dt*Status.staminaMult());
+    // cancel an in-progress consumable use if the player sprints away (the item is
+    // already consumed; cancelling just forfeits the effect — keeps "use" tactical)
+    if(Status.isUsing() && sprint && moving) Status.cancelUse();
     // bleed/buff effects are owned by Status.update
     // vignette
     if(vig>0){ vig-=dt; if(vig<=0) document.getElementById('vig').style.opacity='0'; }
