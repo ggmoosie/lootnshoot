@@ -77,7 +77,7 @@ export const UI = (function(){
   // ---------- overlay helpers ----------
   const OVS=['ovStart','ovInv','ovVendor','ovCraft','ovSkill','ovExtract','ovResult','ovPause','ovSettings','ovMod'];
   function hideAll(){ OVS.forEach(o=>$(o).classList.remove('show')); }
-  function closeMenus(){ hideAll(); hideCtx(); loot=null; Inventory.setExternal(null); disposeGunPreview(); disposeMannequin();
+  function closeMenus(){ hideAll(); hideCtx(); loot=null; Inventory.setExternal(null); disposeGunPreview(); disposeMannequin(); disposeCorpseMannequin();
     if(S.mode===MODE.MENU){ const pm=prevMode; S.setMode(pm);
       if(pm===MODE.PAUSE){ $('ovPause').classList.add('show'); }
       else if(pm===MODE.BOOT){ $('ovStart').classList.add('show'); }
@@ -116,7 +116,11 @@ export const UI = (function(){
   let drag=null;          // { uid, rot, def }
 
   function toggleInventory(){ if($('ovInv').classList.contains('show')) return closeMenus(); loot=null; Inventory.setExternal(null); openOverlay('ovInv'); renderInventory(); }
-  function openLoot(corpse){ loot=corpse; Inventory.setExternal(corpse.grid); openOverlay('ovInv'); renderInventory(); }
+  // Loot a corpse (structured: equip slots + nested rig/backpack grids) or a crate
+  // (flat grid). Register the right external shape so Inventory.locate/move can see
+  // its slots + grids, then render the dual-panel loot screen.
+  function openLoot(corpse){ loot=corpse; Inventory.setExternal(corpse.equip?{equip:corpse.equip}:corpse.grid); openOverlay('ovInv'); renderInventory(); }
+  function isCorpse(c){ return !!(c&&c.equip); }
 
   function gridHTML(grid,label,gk){
     let h=`<div class="col"><div class="colT"><span>${label}</span><span class="cap">${grid.w}×${grid.h}</span></div><div class="gridscroll"><div class="grid" data-gk="${gk}" style="width:${grid.w*CELL}px;height:${grid.h*CELL}px">`;
@@ -125,30 +129,72 @@ export const UI = (function(){
       h+=`<div class="gi r-${it.def.rarity||1}${small?' small':''}" data-uid="${it.uid}" style="left:${it.x*CELL}px;top:${it.y*CELL}px;width:${w}px;height:${hh}px"><span class="ic">${iconFor(it.def)}</span><span class="nm">${it.def.name}</span>${it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
     h+=`</div></div></div>`; return h;
   }
-  function slotHTML(s,it){ const meta={primary:['Primary','🔫'],secondary:['Sidearm','🔫'],helmet:['Helmet','⛑️'],armor:['Armor','🛡️'],clothing:['Clothing','👕'],rig:['Rig','🦺'],backpack:['Pack','🎒']}[s];
+  // slotHTML(slot, item, corpse?) — one paper-doll slot. For the player (corpse=false)
+  // the slot carries data-slot so it is a valid equip DROP target. For a corpse it
+  // carries data-cslot instead (drag-source only — you can't gear up a dead body),
+  // and its empty cells read "empty" rather than the player slot prompt.
+  function slotHTML(s,it,corpse){ const meta={primary:['Primary','🔫'],secondary:['Sidearm','🔫'],helmet:['Helmet','⛑️'],armor:['Armor','🛡️'],clothing:['Clothing','👕'],rig:['Rig','🦺'],backpack:['Pack','🎒']}[s];
     const wide = (s==='primary'||s==='secondary');
-    return `<div class="eslot ${wide?'wpn ':''}${it?'full r-'+(it.def.rarity||1):''}" style="grid-area:${s}" data-slot="${s}" ${it?`data-uid="${it.uid}"`:''}>
+    const tag = corpse ? `data-cslot="${s}"` : `data-slot="${s}"`;
+    return `<div class="eslot ${wide?'wpn ':''}${corpse?'cslot ':''}${it?'full r-'+(it.def.rarity||1):''}" style="grid-area:${s}" ${tag} ${it?`data-uid="${it.uid}"`:''}>
       <span class="ei">${it?iconFor(it.def):meta[1]}</span><span class="sn">${it&&wide?it.def.name:meta[0]}</span>${it&&it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
 
-  function renderInventory(){
-    gridMap={}; const e=S.profile.equip;
+  // ---- the player's loadout (paper-doll + stat readout) as a column ----
+  function playerLoadoutHTML(){
+    const e=S.profile.equip;
     // gear readout from the unified armor/clothing system (helmet+armor+clothing)
     const gt=Inventory.gearTotals();
     const drPct=Math.round(gt.dr*100);
     const ergoPct=Math.round((gt.ergo||0)*100);
     const ergoStr=ergoPct===0?'—':(ergoPct>0?'+'+ergoPct+'%':ergoPct+'%');
-    const eq=`<div class="col gearcol"><div class="colT"><span>Loadout</span></div>
+    return `<div class="col gearcol"><div class="colT"><span>${loot?'You':'Loadout'}</span></div>
       <div class="doll">${EQUIP_SLOTS.map(s=>slotHTML(s,e[s])).join('')}<div class="dollfig" id="dollFig" aria-hidden="true"></div></div>
       <div class="gearstats"><div><span class="gl">HEALTH</span><span class="gv">${Math.round(S.player.maxHealth)}</span></div><div><span class="gl">ARMOR</span><span class="gv">AC${gt.ac} · ${drPct}%</span></div><div><span class="gl">MOBILITY</span><span class="gv">${ergoStr}</span></div></div>
       <div class="mini" style="margin-top:6px">Drag to equip · <b style="color:var(--amber)">R</b> rotate · <b style="color:var(--amber)">shift</b>+click quick-move · right-click menu</div></div>`;
-    let cols='';
+  }
+  // ---- a looted CORPSE's loadout (paper-doll, drag-source only) as a column ----
+  // Mirrors the player widget: equip slots around a 3D body. Empty slots read as
+  // empty; filled slots are draggable into the player's inventory.
+  function corpseLoadoutHTML(c){
+    const eq=c.equip;
+    return `<div class="col gearcol corpsecol"><div class="colT"><span>${(c.label||'Body').replace(/'s kit$/,'')}</span></div>
+      <div class="doll">${EQUIP_SLOTS.map(s=>slotHTML(s,eq[s],true)).join('')}<div class="dollfig" id="corpseFig" aria-hidden="true"></div></div>
+      <div class="mini" style="margin-top:6px">Drag from the body · <b style="color:var(--amber)">shift</b>+click grab · right-click menu</div></div>`;
+  }
+  // grids on the corpse (its equipped rig + backpack containers), registered for d&d
+  function corpseGridsHTML(c){
+    let h=''; const eq=c.equip;
+    if(eq.rig){ gridMap.crig=eq.rig.inst.container; h+=gridHTML(gridMap.crig,'Body Rig','crig'); }
+    if(eq.backpack){ gridMap.cbag=eq.backpack.inst.container; h+=gridHTML(gridMap.cbag,'Body Pack','cbag'); }
+    if(!eq.rig && !eq.backpack) h+=`<div class="col"><div class="colT"><span>Body</span></div><div class="mini" style="opacity:.6;padding:8px 2px">No rig or pack on this body.</div></div>`;
+    return h;
+  }
+  // the player's own grids (rig + backpack in raid; stash in hub)
+  function playerGridsHTML(){
+    const e=S.profile.equip; let cols='';
     if(e.rig){ gridMap.rig=e.rig.inst.container; cols+=gridHTML(gridMap.rig,'Rig','rig'); }
     if(e.backpack){ gridMap.backpack=e.backpack.inst.container; cols+=gridHTML(gridMap.backpack,'Backpack','backpack'); }
     if(S.mode===MODE.HUB){ gridMap.stash=Inventory.stash(); cols+=gridHTML(gridMap.stash,'Stash','stash'); }
-    let lootCol='';
-    if(loot){ gridMap.ext=loot.grid; lootCol=gridHTML(loot.grid,(loot.label||'Loot').toUpperCase(),'ext'); }
+    return cols;
+  }
+
+  function renderInventory(){
+    gridMap={};
+    let body;
+    if(loot && isCorpse(loot)){
+      // STRUCTURED corpse loot: two mirrored halves — corpse (left) | you (right).
+      const left=`<div class="lootside"><div class="lootsideT">Corpse</div><div class="invwrap">${corpseLoadoutHTML(loot)}${corpseGridsHTML(loot)}</div></div>`;
+      const right=`<div class="lootside"><div class="lootsideT">You</div><div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}</div></div>`;
+      body=`<div class="lootcols">${left}${right}</div>`;
+    } else if(loot){
+      // legacy flat container (crate): its grid + the player's gear/grids
+      gridMap.ext=loot.grid; const lootCol=gridHTML(loot.grid,(loot.label||'Loot').toUpperCase(),'ext');
+      body=`<div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}${lootCol}</div>`;
+    } else {
+      body=`<div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}</div>`;
+    }
     $('invCard').innerHTML=`<div class="eb">${loot?'Body // Loot':'Loadout // Inventory'}</div><h1>${loot?'Loot':'Gear'}</h1>
-      <div class="invwrap">${eq}${cols}${lootCol}</div>
+      ${body}
       <div style="margin-top:16px">
         <span class="btn" id="invClose" style="width:auto;display:inline-block;margin:0"><span class="k">ESC</span> Close</span>
         ${loot?'<span class="btn" id="invTakeAll" style="width:auto;display:inline-block;margin:0 0 0 8px"><span class="k">⇪</span> Take all</span>':''}
@@ -169,6 +215,7 @@ export const UI = (function(){
         el.addEventListener('contextmenu', ev=>{ ev.preventDefault(); showCtx(el.dataset.uid*1, ev.clientX, ev.clientY); }); }
     });
     mountMannequin();
+    if(loot && isCorpse(loot)) mountCorpseMannequin(loot); else disposeCorpseMannequin();
     hideCtx();
     if(loot && loot.cmesh) Loot.reflectCorpse(loot);
   }
@@ -202,7 +249,44 @@ export const UI = (function(){
     }
     refreshMannequin();
   }
-  function takeAll(){ if(!loot) return; for(const it of [...loot.grid.items]) Inventory.quickTo(it.uid, Inventory.carried()[0]||Inventory.stash()); renderInventory(); refreshHUD(); }
+
+  // ----- corpse paper-doll 3D mannequin -----
+  // Same persistent-canvas pattern as the player doll, but for the looted body in
+  // the left column. Built from the corpse's own equip object (which buildMannequin
+  // already understands — it's the same {helmet,armor,rig,backpack,primary,...}
+  // slot shape). Disposed when the loot screen closes (closeMenus).
+  let corpsePrev=null, corpseCanvas=null;
+  function disposeCorpseMannequin(){
+    if(corpsePrev){ corpsePrev.dispose(); corpsePrev=null; }
+    if(corpseCanvas && corpseCanvas.parentNode) corpseCanvas.parentNode.removeChild(corpseCanvas);
+    corpseCanvas=null;
+  }
+  function mountCorpseMannequin(c){
+    const fig=$('corpseFig'); if(!fig) return;
+    if(!corpseCanvas){
+      corpseCanvas=document.createElement('canvas'); corpseCanvas.className='doll-3d';
+      fig.appendChild(corpseCanvas);
+      corpsePrev=createPreview(corpseCanvas, { autoRotate:true, rotateSpeed:0.5, fov:38, fitOffset:1.25 });
+      corpsePrev.start();
+    } else {
+      fig.appendChild(corpseCanvas);
+      corpsePrev.resize();
+    }
+    if(corpsePrev) corpsePrev.setModel(buildMannequin(c.equip));
+  }
+
+  // Take all: a corpse drains from its equip slots + nested grids; a crate from its
+  // flat grid. Everything flows into the player's first carried grid (or stash).
+  function lootItems(){
+    if(!loot) return [];
+    if(isCorpse(loot)){ const out=[]; const eq=loot.equip;
+      for(const s of EQUIP_SLOTS) if(eq[s]) out.push(eq[s]);
+      for(const g of Inventory.extGrids()) for(const it of g.items) out.push(it);
+      return out; }
+    return [...loot.grid.items];
+  }
+  function takeAll(){ if(!loot) return; const dest=Inventory.carried()[0]||Inventory.stash();
+    for(const it of lootItems()) Inventory.quickTo(it.uid, dest); renderInventory(); refreshHUD(); }
 
   // ----- drag/drop -----
   function startDrag(ev){
@@ -214,9 +298,13 @@ export const UI = (function(){
     const g=$('dragGhost'); sizeGhost(); g.innerHTML=`<span>${iconFor(loc.item.def)}</span>`; g.style.display='flex';
     moveGhost(ev.clientX,ev.clientY); this.classList.add('dragging');
   }
+  // is this located item on the open external actor (corpse equip/grids or crate)?
+  function onExternal(loc){ return loc.where==='extequip' || loc.tag==='ext'; }
+  // a place on the corpse for an incoming player item: its rig, else its pack
+  function corpseStash(){ const gs=Inventory.extGrids(); return gs[0]||null; }
   // shift+click: send item to the logical "other" inventory
   function quickMove(uid){ const loc=Inventory.locate(uid); if(!loc) return; let dest=null;
-    if(loot){ dest = loc.tag==='ext' ? (Inventory.carried()[0]||Inventory.stash()) : loot.grid; }
+    if(loot){ dest = onExternal(loc) ? (Inventory.carried()[0]||Inventory.stash()) : (isCorpse(loot)?corpseStash():loot.grid); }
     else if(S.mode===MODE.HUB){ dest = loc.tag==='stash' ? (Inventory.carried()[0]||Inventory.stash()) : Inventory.stash(); }
     else { const cs=Inventory.carried(); dest = (loc.tag==='carried' && cs[1]) ? cs[1] : cs[0]; }
     if(dest && Inventory.quickTo(uid,dest)){ Audio.play('ui'); renderInventory(); refreshHUD(); } }
@@ -270,8 +358,8 @@ export const UI = (function(){
     else if(def.type==='attachment') acts.push(['Install on weapon',()=>Inventory.installAttachment(uid)]);
     else if(def.type==='med'||def.type==='food') acts.push(['Use',()=>{ Player.heal(def.heal); if(def.cure)Status.clear('bleed'); Inventory.dropOrDestroy(uid); }]);
     else if(def.type==='deployable') acts.push(['Deploy',()=>Allies.deploy()]);
-    if(loot && loc.tag==='ext') acts.push(['Take',()=>Inventory.quickTo(uid, Inventory.carried()[0]||Inventory.stash())]);
-    else if(loot) acts.push(['→ Body',()=>Inventory.quickTo(uid, loot.grid)]);
+    if(loot && onExternal(loc)) acts.push(['Take',()=>Inventory.quickTo(uid, Inventory.carried()[0]||Inventory.stash())]);
+    else if(loot){ const dest=isCorpse(loot)?corpseStash():loot.grid; if(dest) acts.push(['→ Body',()=>Inventory.quickTo(uid, dest)]); }
     if(S.mode===MODE.HUB){ if(loc.tag!=='stash') acts.push(['→ Stash',()=>Inventory.quickTo(uid,Inventory.stash())]); else { const c=Inventory.carried()[0]; if(c) acts.push(['→ Carry',()=>Inventory.quickTo(uid,c)]); } acts.push(['Sell '+Inventory.sellValue(it)+'c',()=>Vendor.sell(uid)]); }
     acts.push(['Discard',()=>Inventory.dropOrDestroy(uid)]);
     const ctx=$('ctx'); ctx.innerHTML=`<div class="ci t">${def.name}</div>`+acts.map((a,i)=>`<div class="ci" data-i="${i}">${a[0]}</div>`).join('');
