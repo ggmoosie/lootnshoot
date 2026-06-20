@@ -119,6 +119,15 @@
 <div id="tip"></div>
 <div id="dragGhost"></div>
 
+<!-- Firebase (compat SDK -> exposes a global `firebase`). Optional shared cross-game
+     account login + cloud username. Same project + SDK version as the other games
+     (riftspawn) so signing into ANY of them shares the session here. If these fail
+     to load (offline / blocked) the game runs exactly as before, local-only, and the
+     bug-report widget falls back to its manual name field. -->
+<script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-firestore-compat.js"></script>
+
 <!-- three.js r128, classic build (sets window.THREE) — MUST load before the module -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <!-- offline guard: if the CDN didn't load, show the original error and don't boot -->

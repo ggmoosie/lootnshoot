@@ -23,6 +23,7 @@ import { Raid } from "./raid.js";
 import { Projectiles } from "./projectiles.js";
 import { createPreview } from "./preview.js";
 import { buildMannequin } from "./mannequin.js";
+import { Account } from "./account.js";
 
 export const UI = (function(){
   const $=id=>document.getElementById(id);
@@ -126,6 +127,7 @@ export const UI = (function(){
     const has=Save.load();
     $('startCard').innerHTML=`
       <div class="eb">Tactical Extraction // ${GAME_VERSION}</div><h1>LootNShoot</h1>
+      <div id="acctRow"></div>
       <p class="sub">Gear up in the safehouse, ride the train out to a hostile stop, clear it, grab loot, then choose to extract or push the train deeper for bigger rewards and risk. Die in the field and your pack & rig are gone.</p>
       <div class="hint"><b>WASD</b> move · <b>SPACE</b> jump · <b>C</b> crouch · <b>L-CLICK</b> fire · <b>R-CLICK</b> ADS · <b>R</b> reload · <b>Z</b> melee · <b>G</b> grenade · <b>F</b> pick up · <b>E</b> loot/interact · <b>TAB</b> inventory · rebind all in Settings</div>
       <div class="btn" id="bGo"><span class="k">▶</span> ${has?'Continue':'Enter Safehouse'}</div>
@@ -138,7 +140,60 @@ export const UI = (function(){
     $('bSet').onclick=()=>{ if(!S.profile){ S.profile = has||Save.newProfile(); Progression.recompute(); } openSettings(); };
     $('bRep').onclick=openReport;
     if(has) $('bNew').onclick=()=>{ Save.wipe(); S.profile=Save.newProfile(); Progression.recompute(); Input.applySettings(); hideAll(); World.buildHub(); };
+    renderAccount();
   }
+
+  // ---------- ACCOUNT (shared cross-game login) ----------
+  // A self-contained block rendered into #acctRow on the start card. Logged-out →
+  // a compact username/password sign-in/up form with a mode toggle; logged-in → the
+  // username + a sign-out link. The username is the SAME one used in Riftspawn and
+  // every other game on this origin. ENTIRELY OPTIONAL: if Firebase isn't available
+  // (offline / blocked) the whole block is hidden and the game plays local-only.
+  let _acctMode='login';   // 'login' | 'signup'
+  let _acctBusy=false;
+  function renderAccount(){
+    const row=$('acctRow'); if(!row) return;
+    if(!Account.available()){ row.innerHTML=''; return; } // offline / SDK blocked → no login chrome at all
+    const acct=Account.current();
+    if(acct){
+      row.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:2px 0 14px;padding:9px 12px;border:1px solid var(--line);background:#0c0f12;font-family:var(--mono);font-size:12px">
+          <span style="color:var(--go);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">◈ ${escAcct(acct.username)}</span>
+          <span class="acctLink" id="acctLogout" style="color:var(--dim);cursor:pointer;flex:none">sign out</span>
+        </div>`;
+      const lo=$('acctLogout'); if(lo) lo.onclick=async ()=>{ try{ await Account.signOut(); }catch(_){} };
+      return;
+    }
+    const isSignup=_acctMode==='signup';
+    const fs=`width:100%;background:#0c0f12;border:1px solid var(--line);color:var(--text);padding:9px 11px;font-family:var(--mono);font-size:13px;box-sizing:border-box`;
+    row.innerHTML=`<div style="margin:2px 0 14px;padding:11px 12px;border:1px solid var(--line);background:#0c0f12">
+        <div style="font-family:var(--mono);font-size:11px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;margin-bottom:8px">${isSignup?'Create account':'Sign in'} <span style="color:var(--blue)">· syncs across all the games</span></div>
+        <input id="acctUser" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="20" placeholder="username" style="${fs};margin-bottom:7px">
+        <input id="acctPass" type="password" autocomplete="${isSignup?'new-password':'current-password'}" placeholder="password" style="${fs}">
+        <div id="acctMsg" style="min-height:16px;font-family:var(--mono);font-size:11px;margin:7px 0 2px;color:var(--dim)"></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <div class="btn" id="acctGo" style="width:auto;margin:0;flex:1;text-align:center"><span class="k">▸</span> ${isSignup?'Create account':'Log in'}</div>
+        </div>
+        <div class="acctLink" id="acctToggle" style="margin-top:9px;font-family:var(--mono);font-size:11px;color:var(--blue);cursor:pointer">${isSignup?'Have an account? Sign in ›':'New here? Create an account ›'}</div>
+      </div>`;
+    const user=$('acctUser'), pass=$('acctPass'), go=$('acctGo'), tog=$('acctToggle'), msg=$('acctMsg');
+    const setMsg=(t,c)=>{ if(msg){ msg.textContent=t||''; msg.style.color=c||'var(--dim)'; } };
+    const submit=async ()=>{
+      if(_acctBusy) return;
+      const u=(user.value||'').trim(), p=pass.value||'';
+      if(!u||!p){ setMsg('Enter your username and password.','var(--amber)'); return; }
+      _acctBusy=true; const lbl=go.innerHTML; go.innerHTML='<span class="k">…</span> Working'; go.classList.add('disabled'); setMsg('');
+      try{
+        if(isSignup) await Account.signUp(u,p); else await Account.signIn(u,p);
+        // success → onAuthStateChanged fires 'account:changed' which re-renders this block
+      }catch(err){ setMsg(Account.errText(err,isSignup),'var(--bad)'); _acctBusy=false; go.innerHTML=lbl; go.classList.remove('disabled'); }
+    };
+    go.onclick=submit;
+    pass.onkeydown=ev=>{ if(ev.key==='Enter') submit(); };
+    user.onkeydown=ev=>{ if(ev.key==='Enter') submit(); };
+    if(tog) tog.onclick=()=>{ if(_acctBusy) return; _acctMode=isSignup?'login':'signup'; renderAccount(); };
+  }
+  // minimal text escape for the username we echo into the menu
+  function escAcct(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
   // ---------- INVENTORY (Tarkov-style spatial drag/drop) ----------
   const CELL=44;
@@ -692,7 +747,12 @@ export const UI = (function(){
   let rpType='bug', rpSending=false;
   function openReport(){ rpType='bug'; rpSending=false; openOverlay('ovReport'); renderReport(); setTimeout(()=>{ try{ const n=$('rpName'); (n&&n.value?$('rpText'):n).focus(); }catch(_){} },30); }
   function renderReport(){
+    // When signed in, default the name to the account username (and lock it — the
+    // report is attributed to the account, with playerUid attached). Signed out /
+    // offline falls back to the persisted manual name field exactly as before.
+    const acct=Account.current();
     let savedName=''; try{ savedName=localStorage.getItem(REPORT_NAME_KEY)||''; }catch(_){}
+    const nameVal = acct ? acct.username : savedName;
     const isBug=rpType==='bug';
     $('reportCard').innerHTML=`<div class="eb">Field Report // Intel</div><h1>Report</h1>
       <p class="sub">Hit a bug or have an idea? Send it straight to command — we read every one.</p>
@@ -701,9 +761,9 @@ export const UI = (function(){
         <span class="tab ${isBug?'':'on'}" data-rptype="feature">✦ Feature request</span>
       </div>
       <div class="row" style="border:none;padding:0;display:block">
-        <label class="lab" for="rpName" style="display:block;margin-bottom:5px">Your name</label>
-        <input id="rpName" type="text" maxlength="40" autocomplete="off" placeholder="Operator…"
-          style="width:100%;background:#0c0f12;border:1px solid var(--line);color:var(--text);padding:10px 12px;font-family:var(--mono);font-size:14px;box-sizing:border-box">
+        <label class="lab" for="rpName" style="display:block;margin-bottom:5px">Your name${acct?' <span style="color:var(--go)">· signed in</span>':''}</label>
+        <input id="rpName" type="text" maxlength="40" autocomplete="off" placeholder="Operator…" ${acct?'disabled':''}
+          style="width:100%;background:#0c0f12;border:1px solid var(--line);color:var(--text);padding:10px 12px;font-family:var(--mono);font-size:14px;box-sizing:border-box${acct?';opacity:.7':''}">
       </div>
       <div class="row" style="border:none;padding:0;display:block;margin-top:12px">
         <label class="lab" for="rpText" id="rpTextLabel" style="display:block;margin-bottom:5px">${isBug?'What happened?':'What would you like?'}</label>
@@ -716,7 +776,7 @@ export const UI = (function(){
         <div class="btn" id="rpCancel" style="width:auto;margin:0;flex:1;text-align:center"><span class="k">ESC</span> Cancel</div>
         <div class="btn" id="rpSubmit" style="width:auto;margin:0;flex:1;text-align:center"><span class="k">▸</span> Send report</div>
       </div>`;
-    $('rpName').value=savedName;
+    $('rpName').value=nameVal;
     $('reportCard').querySelectorAll('[data-rptype]').forEach(b=>b.onclick=()=>{
       if(rpSending) return;
       const t=b.dataset.rptype; if(t===rpType) return;
@@ -731,10 +791,14 @@ export const UI = (function(){
   function reportMsg(text,color){ const m=$('rpMsg'); if(m){ m.textContent=text||''; m.style.color=color||'var(--dim)'; } }
   async function submitReport(){
     if(rpSending) return;                         // debounce double-submits
-    const name=($('rpName').value||'').trim();
+    // Signed in → attribute the report to the account (username + playerUid, which
+    // the backend supports). Signed out / offline → the manual name field, persisted
+    // as before. The username takes precedence so the field can't drift out of sync.
+    const acct=Account.current();
+    const name=acct ? acct.username : ($('rpName').value||'').trim();
     const message=($('rpText').value||'').trim();
     if(!message){ reportMsg('Tell us a little about it first.','var(--amber)'); $('rpText').focus(); return; }
-    try{ if(name) localStorage.setItem(REPORT_NAME_KEY,name); }catch(_){}
+    if(!acct){ try{ if(name) localStorage.setItem(REPORT_NAME_KEY,name); }catch(_){} } // only persist the manual name
     rpSending=true; const sub=$('rpSubmit'); if(sub){ sub.classList.add('disabled'); sub.innerHTML='<span class="k">…</span> Sending'; } reportMsg('');
     const payload={
       project:'lootnshoot',
@@ -748,6 +812,8 @@ export const UI = (function(){
         console:(typeof window!=='undefined'&&Array.isArray(window.__LNS_ERRLOG)?window.__LNS_ERRLOG.slice(-5).join('\n'):'')
       }
     };
+    // account-linked attribution when signed in (backend supports playerUid)
+    if(acct) payload.playerUid=acct.uid;
     try{
       const res=await fetch(REPORT_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       if(!res.ok) throw new Error('HTTP '+res.status);
@@ -1008,6 +1074,10 @@ export const UI = (function(){
   Events.on('progress:changed', refreshHUD);
   Events.on('inv:changed', ()=>{ if($('ovInv').classList.contains('show')) renderInventory(); refreshHUD(); });
   Events.on('threats:changed', ()=>{ $('thN').textContent=Enemies.aliveCount(); if(Input.isTouch) refreshTouchHUD(S.player,S.profile); });
+  // Account state (sign-in / sign-out / restored session): refresh the menu's
+  // account block, and the report form's name field if it's currently open.
+  Events.on('account:changed', ()=>{ _acctBusy=false; renderAccount();
+    if($('ovReport') && $('ovReport').classList.contains('show')) renderReport(); });
 
   return { setObjective, prompt, hit, dmgDir, banner, flashReload, toast, refreshHUD, renderStart, toggleInventory, openStation,
            openVendor, openCraft, openSkills, openLoot, openSettings, openMod, openReport, showExtractChoice, showResult, pause, resume, closeMenus };
