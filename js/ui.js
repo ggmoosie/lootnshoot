@@ -106,7 +106,7 @@ export const UI = (function(){
       else if(pm===MODE.BOOT){ $('ovStart').classList.add('show'); }
       else if(pm===MODE.RAID||pm===MODE.HUB){ Input.relock(); } } }
   let prevMode=MODE.HUB;
-  function openOverlay(id){ prevMode = S.mode===MODE.MENU?prevMode:S.mode; S.setMode(MODE.MENU); document.exitPointerLock(); hideAll(); $(id).classList.add('show'); }
+  function openOverlay(id){ prevMode = S.mode===MODE.MENU?prevMode:S.mode; S.setMode(MODE.MENU); document.exitPointerLock(); Input.clearKeys(); hideAll(); $(id).classList.add('show'); }
   // The mode the player is REALLY in. Opening a menu overlay flips S.mode to MENU,
   // which would otherwise hide HUB-only UI (the stash column) and break HUB/RAID
   // routing while the inventory is open. Fall back to prevMode in that case.
