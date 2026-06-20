@@ -27,6 +27,7 @@ import { FX } from "./fx.js";
 import { Minimap } from "./minimap.js";
 import { UI } from "./ui.js";
 import { Input } from "./input.js";
+import { Account } from "./account.js";
 
 if(!THREE){
   // index.html's offline guard already rendered the error; nothing to boot.
@@ -58,6 +59,10 @@ function loop(){
 /* ████████████████████████████████████████████████████████████████████████████
    BOOT
    ████████████████████████████████████████████████████████████████████████████ */
+// Optional shared cross-game account layer. No-op if the Firebase SDK is absent
+// (offline / blocked) — the game boots and runs identically without it. Init early
+// so the persisted session is restored before the menu paints its account row.
+Account.init();
 Weapons.buildViewmodel();
 UI.renderStart();
 Minimap.init();
