@@ -175,6 +175,86 @@ DATA.stops = {
   rewardMult(i){ return 1 + i*0.35; },
 };
 
+/* ════════════════════════════════════════════════════════════════════════════
+   SECTION: THROWABLES + CONSUMABLES  (added by feat/lns-throwables-healing)
+   Self-contained content block — appended via Object.assign so it never collides
+   with the literals above (parallel agents auto-merge). Owns: extra throwable
+   item defs, the throwable tuning table (Projectiles reads it), the simplified
+   healing/consumable tuning table (Player/Status read it), plus their icons +
+   vendor stock. NO behavior here — pure data.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+// --- new throwable items (frag already lives in DATA.items above). `dmg`/`radius`
+//     are kept on every entry so the inventory tooltip (ui.js statLines) reads
+//     cleanly for non-damaging types too. `throw` keys into DATA.throwables. ---
+Object.assign(DATA.items, {
+  nade_smoke:{name:'Smoke Grenade', type:'throwable', throw:'smoke', dmg:0,  radius:7, size:[1,1], stack:3, value:90,  rarity:1},
+  nade_flash:{name:'Flashbang',     type:'throwable', throw:'flash', dmg:0,  radius:8, size:[1,1], stack:3, value:120, rarity:2},
+  nade_inc:{name:'Incendiary',      type:'throwable', throw:'incendiary', dmg:18, radius:5, size:[1,1], stack:2, value:180, rarity:3},
+  // new consumables (med_bandage / med_kit / stim already exist above)
+  med_stimpak:{name:'Adrenal Stim', type:'med', use:'stimpak', heal:10, buff:'speed', size:[1,1], value:260, rarity:3},
+  med_focus:{name:'Focus Shot',     type:'med', use:'focus',   heal:0,  buff:'stamina', size:[1,1], value:240, rarity:3},
+});
+
+// --- throwable behaviour tuning. `kind` selects the effect Projectiles runs on
+//     detonation. fuse=seconds airborne before auto-pop; thrown items also pop on
+//     ground contact (except where noted). All radii/durations are gameplay knobs.
+DATA.throwables = {
+  // classic frag mirrors the existing nade_frag stats (kept so the new
+  // multi-throwable selector can also throw frag); damage falls off to the edge.
+  frag:{ item:'nade_frag', kind:'frag', label:'FRAG', color:0x2f3a22, fuse:2.4,
+         dmg:130, radius:6, noise:'boom' },
+  // smoke: no damage. Spawns a lingering vision-screen cloud; standing inside it
+  // applies the player `smoked` overlay; enemies see worse (handled via noise=0).
+  smoke:{ item:'nade_smoke', kind:'smoke', label:'SMOKE', color:0x9aa0a6, fuse:1.6,
+          dmg:0, radius:7, duration:11, noise:null },
+  // flash/stun: brief player blind if facing/near + suppresses enemy fire (stun)
+  // for everyone inside the radius. Pops on a short fuse (cooked airburst feel).
+  flash:{ item:'nade_flash', kind:'flash', label:'FLASH', color:0xfff4cc, fuse:1.5,
+          dmg:0, radius:8, blind:2.4, stun:3.2, noise:'boom' },
+  // incendiary: small burst + a burning ground zone that ticks DoT on anything
+  // inside it (enemies via Enemies.damage, player via Status burn) for `duration`.
+  incendiary:{ item:'nade_inc', kind:'incendiary', label:'INCEND', color:0xff5a1f, fuse:1.8,
+          dmg:24, radius:5, duration:6, tick:9, noise:'boom' },
+};
+// preferred cycle order for the throwable selector (only carried types show)
+DATA.throwOrder = ['frag','smoke','flash','incendiary'];
+
+// --- simplified healing + buff consumables (NO hunger/thirst/weight — extraction
+//     shooter, not a survival sim). `useTime` = seconds of the cosmetic use-anim
+//     before the effect lands. `heal` = instant restore on finish (medkit/bandage);
+//     `regen` = heal-over-time amount/sec for `regenDur` sec; buffs are timed
+//     Status effects. Player.useMed / Status read this. ---
+DATA.consumables = {
+  med_bandage:{ name:'Bandage',  useTime:2.0, heal:25, cure:'bleed' },
+  med_kit:    { name:'Med Kit',  useTime:4.0, heal:40, regen:8, regenDur:5, cure:'bleed' },
+  stim:       { name:'Combat Stim', useTime:1.2, heal:15, buff:'speed',   buffDur:12, buffMag:1 },
+  med_stimpak:{ name:'Adrenal Stim', useTime:1.0, heal:10, buff:'speed',  buffDur:9,  buffMag:1.4 },
+  med_focus:  { name:'Focus Shot',   useTime:1.4, heal:0,  buff:'stamina', buffDur:14, buffMag:1 },
+};
+
+// --- icons + vendor stock for the new content (Object.assign keeps the source
+//     literals above untouched -> clean parallel merges). ---
+Object.assign(DATA.iconId, {
+  nade_smoke:'🌫️', nade_flash:'✨', nade_inc:'🔥', med_stimpak:'💉', med_focus:'🎯',
+});
+DATA.vendor.push('nade_smoke','nade_flash','nade_inc','stim','med_stimpak','med_focus');
+
+// --- make the new content obtainable in raids (push -> merge-safe vs. the loot
+//     literals above). The new throwables/consumables drop alongside the frag. ---
+DATA.loot.enemy_drop.push({id:'nade_smoke',w:2},{id:'nade_flash',w:1});
+DATA.loot.cont_weapon.push({id:'nade_smoke',w:2},{id:'nade_flash',w:2},{id:'nade_inc',w:1});
+DATA.loot.cont_med.push({id:'med_stimpak',w:2},{id:'med_focus',w:2});
+DATA.loot.crate_rare.push({id:'nade_inc',w:1},{id:'med_stimpak',w:1});
+
+// --- extra keybinds for the selectable-throwable system (Projectiles owns the
+//     listeners; G / mobile NADE stay the legacy frag throw via Weapons). ---
+Object.assign(DATA.binds, { throwCycle:'KeyV', throwUse:'KeyQ' });
+Object.assign(DATA.bindLabels, { throwCycle:'Cycle Throwable', throwUse:'Throw Selected' });
+
+// each NEW def carries its own id (the loop above the original block only ran over
+// the original items; re-stamp so serialize/icons/stacking work for these too).
+for(const k in DATA.items) if(!DATA.items[k].id) DATA.items[k].id=k;
 // =====================================================================
 // ===== GEAR — armor + clothing system (feat/lns-armor-clothing) ======
 // =====================================================================
