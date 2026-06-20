@@ -125,17 +125,21 @@ export const UI = (function(){
       h+=`<div class="gi r-${it.def.rarity||1}${small?' small':''}" data-uid="${it.uid}" style="left:${it.x*CELL}px;top:${it.y*CELL}px;width:${w}px;height:${hh}px"><span class="ic">${iconFor(it.def)}</span><span class="nm">${it.def.name}</span>${it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
     h+=`</div></div></div>`; return h;
   }
-  function slotHTML(s,it){ const meta={primary:['Primary','🔫'],secondary:['Sidearm','🔫'],helmet:['Helmet','⛑️'],armor:['Armor','🛡️'],rig:['Rig','🦺'],backpack:['Pack','🎒']}[s];
+  function slotHTML(s,it){ const meta={primary:['Primary','🔫'],secondary:['Sidearm','🔫'],helmet:['Helmet','⛑️'],armor:['Armor','🛡️'],clothing:['Clothing','👕'],rig:['Rig','🦺'],backpack:['Pack','🎒']}[s];
     const wide = (s==='primary'||s==='secondary');
     return `<div class="eslot ${wide?'wpn ':''}${it?'full r-'+(it.def.rarity||1):''}" style="grid-area:${s}" data-slot="${s}" ${it?`data-uid="${it.uid}"`:''}>
       <span class="ei">${it?iconFor(it.def):meta[1]}</span><span class="sn">${it&&wide?it.def.name:meta[0]}</span>${it&&it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
 
   function renderInventory(){
     gridMap={}; const e=S.profile.equip;
-    const armorVal=(e.armor?e.armor.def.armor:0)+(e.helmet?Math.round(e.helmet.def.armor*0.4):0);
+    // gear readout from the unified armor/clothing system (helmet+armor+clothing)
+    const gt=Inventory.gearTotals();
+    const drPct=Math.round(gt.dr*100);
+    const ergoPct=Math.round((gt.ergo||0)*100);
+    const ergoStr=ergoPct===0?'—':(ergoPct>0?'+'+ergoPct+'%':ergoPct+'%');
     const eq=`<div class="col gearcol"><div class="colT"><span>Loadout</span></div>
       <div class="doll">${EQUIP_SLOTS.map(s=>slotHTML(s,e[s])).join('')}<div class="dollfig" id="dollFig" aria-hidden="true"></div></div>
-      <div class="gearstats"><div><span class="gl">HEALTH</span><span class="gv">${Math.round(S.player.maxHealth)}</span></div><div><span class="gl">ARMOR</span><span class="gv">${armorVal}</span></div><div><span class="gl">WEIGHT</span><span class="gv">—</span></div></div>
+      <div class="gearstats"><div><span class="gl">HEALTH</span><span class="gv">${Math.round(S.player.maxHealth)}</span></div><div><span class="gl">ARMOR</span><span class="gv">AC${gt.ac} · ${drPct}%</span></div><div><span class="gl">MOBILITY</span><span class="gv">${ergoStr}</span></div></div>
       <div class="mini" style="margin-top:6px">Drag to equip · <b style="color:var(--amber)">R</b> rotate · <b style="color:var(--amber)">shift</b>+click quick-move · right-click menu</div></div>`;
     let cols='';
     if(e.rig){ gridMap.rig=e.rig.inst.container; cols+=gridHTML(gridMap.rig,'Rig','rig'); }
@@ -219,7 +223,7 @@ export const UI = (function(){
   // double-click: smart use/equip
   function smartUse(uid){ const loc=Inventory.locate(uid); if(!loc) return; const def=loc.item.def;
     if(def.type==='weapon') Inventory.equip(uid,'primary');
-    else if(['armor','helmet','rig','backpack'].includes(def.type)) Inventory.equip(uid);
+    else if(['armor','helmet','clothing','rig','backpack'].includes(def.type)) Inventory.equip(uid);
     else if(def.type==='med'){ Player.heal(def.heal); if(def.cure)Status.clear('bleed'); Inventory.dropOrDestroy(uid); Audio.play('ui'); }
     else if(def.type==='attachment') Inventory.installAttachment(uid);
     else if(loot) quickMove(uid);
@@ -245,7 +249,7 @@ export const UI = (function(){
     const slotEl=slotUnder(x,y);
     if(slotEl){ const slot=slotEl.dataset.slot, def=d.def;
       if(def.type==='weapon'){ if(slot==='primary'||slot==='secondary') Inventory.equip(d.uid,slot); }
-      else { const tgt={armor:'armor',helmet:'helmet',rig:'rig',backpack:'backpack'}[def.type]; if(tgt===slot) Inventory.equip(d.uid); }
+      else { if(Inventory.slotFor(def)===slot) Inventory.equip(d.uid); } // gear (armor/helmet/clothing/rig/backpack) → its own slot
       renderInventory(); refreshHUD(); return;
     }
     const gel=gridUnder(x,y);
@@ -262,7 +266,7 @@ export const UI = (function(){
   // ----- right-click context menu -----
   function showCtx(uid,x,y){ const loc=Inventory.locate(uid); if(!loc) return; const it=loc.item, def=it.def; const acts=[];
     if(def.type==='weapon'){ acts.push(['Equip Primary',()=>Inventory.equip(uid,'primary')]); acts.push(['Equip Secondary',()=>Inventory.equip(uid,'secondary')]); acts.push(['Modify weapon',()=>openMod(uid)]); }
-    else if(['armor','helmet','rig','backpack'].includes(def.type)) acts.push(['Equip',()=>Inventory.equip(uid)]);
+    else if(['armor','helmet','clothing','rig','backpack'].includes(def.type)) acts.push(['Equip',()=>Inventory.equip(uid)]);
     else if(def.type==='attachment') acts.push(['Install on weapon',()=>Inventory.installAttachment(uid)]);
     else if(def.type==='med'||def.type==='food') acts.push(['Use',()=>{ Player.heal(def.heal); if(def.cure)Status.clear('bleed'); Inventory.dropOrDestroy(uid); }]);
     else if(def.type==='deployable') acts.push(['Deploy',()=>Allies.deploy()]);
@@ -278,17 +282,26 @@ export const UI = (function(){
   addEventListener('pointerdown', ev=>{ const c=$('ctx'); if(c && c.style.display==='block' && !c.contains(ev.target)) hideCtx(); });
 
   // ----- hover tooltip -----
-  function statLines(def){
+  // item is optional; gear reads it for live durability/worn-dr. Falls back to def.
+  function statLines(def, item){
     const L=[]; if(def.type==='weapon'){ const w=DATA.weapons[def.weapon]; L.push(['Damage',w.damage],['RPM',w.rpm],['Mag',w.mag],['Modes',(w.modes||['auto']).join('/')]); }
     else if(def.type==='ammo') L.push(['Caliber',def.cal]);
-    else if(def.type==='armor'||def.type==='helmet') L.push(['Armor',def.armor]);
+    else if(def.type==='armor'||def.type==='helmet'||def.type==='clothing'){
+      // unified gear readout (armor + clothing system)
+      const g=Inventory.gearStat(item||{def, inst:{}});
+      L.push(['Class', 'AC'+(g.ac||0)]);
+      L.push(['Reduction', Math.round((g.dr||0)*100)+'%']);
+      if(typeof g.maxDura==='number'){ const cur=Math.round(typeof g.dura==='number'?g.dura:g.maxDura); L.push(['Durability', cur+'/'+g.maxDura]); }
+      if(g.ergo){ const e=Math.round(g.ergo*100); L.push(['Mobility', (e>0?'+':'')+e+'%']); }
+      if(g.stealth){ L.push(['Stealth', '+'+Math.round(g.stealth*100)+'%']); }
+    }
     else if(def.type==='med'){ L.push(['Heal',def.heal]); if(def.cure) L.push(['Cures',def.cure]); }
     else if(def.type==='throwable') L.push(['Damage',def.dmg],['Radius',def.radius+'m']);
     else if(def.type==='backpack'||def.type==='rig') L.push(['Grid',def.grid[0]+'×'+def.grid[1]]);
     L.push(['Size',def.size[0]+'×'+def.size[1]],['Value',def.value+'c']); return L;
   }
   function showTip(uid,x,y){ if(drag) return; const loc=Inventory.locate(uid); if(!loc) return; const def=loc.item.def;
-    const t=$('tip'); t.innerHTML=`<div class="tn">${def.name}</div><div class="tt">${def.type}</div>`+statLines(def).map(s=>`<div class="ts"><span>${s[0]}</span><b>${s[1]}</b></div>`).join('');
+    const t=$('tip'); t.innerHTML=`<div class="tn">${def.name}</div><div class="tt">${def.type}</div>`+statLines(def, loc.item).map(s=>`<div class="ts"><span>${s[0]}</span><b>${s[1]}</b></div>`).join('');
     t.style.left=Math.min(x+14,innerWidth-210)+'px'; t.style.top=Math.min(y+14,innerHeight-150)+'px'; t.style.display='block'; }
   function moveTip(x,y){ const t=$('tip'); if(t.style.display==='block'){ t.style.left=Math.min(x+14,innerWidth-210)+'px'; t.style.top=Math.min(y+14,innerHeight-150)+'px'; } }
   function hideTip(){ $('tip').style.display='none'; }
@@ -316,9 +329,16 @@ export const UI = (function(){
   function renderMod(){
     const loc=Inventory.locate(modUid); if(!loc||loc.item.def.type!=='weapon'){ closeMenus(); return; }
     const it=loc.item, wDef=DATA.weapons[it.def.weapon], st=Weapons.stats(it), base=DATA.weapons[it.def.weapon];
-    const slotIcon={optic:'🔭',muzzle:'🧪',tactical:'🔦'};
-    // card = where the callout sits over the 3D stage (percent of the stage box)
-    const layout={ optic:{card:[50,8]}, muzzle:{card:[17,51]}, tactical:{card:[63,52]} };
+    // baseline = the weapon with NO mods (1.0 scalars defaulted) so the live
+    // readout's up/dn arrows compare the configured gun against the bare gun.
+    const bareInst={...it, inst:{...it.inst, attachments:{}}};
+    const bare=Weapons.stats(bareInst)||base;
+    const slotIcon={optic:'🔭',muzzle:'🧪',foregrip:'🔦',stock:'🪵',laser:'🔆',magazine:'🔋',barrel:'📏',tactical:'🔦'};
+    // card = where the callout sits over the 3D stage (percent of the stage box,
+    // authored in a 0..60 vertical space matching the stage's 100/60 aspect).
+    const layout={ optic:{card:[50,8]}, barrel:{card:[84,30]}, muzzle:{card:[84,52]},
+      foregrip:{card:[62,52]}, laser:{card:[38,52]}, magazine:{card:[17,52]}, stock:{card:[15,30]},
+      tactical:{card:[62,52]} };
     // available parts per slot from inventory (carried + stash)
     const avail={}; wDef.slots.forEach(s=>avail[s]=[]);
     for(const g of [...Inventory.carried(), Inventory.stash()]) if(g) for(const t of g.items) if(t.def.type==='attachment'&&avail[t.def.slot]) avail[t.def.slot].push(t);
@@ -334,7 +354,16 @@ export const UI = (function(){
           <span class="bptxt"><span class="bpsl">${sl}</span><span class="bpnm">${cur?curDef.name:'— empty'}</span></span><span class="bpcar">▾</span></div>
         ${open?`<div class="bpdrop">${opts}</div>`:''}</div>`;
     }
-    const rows=[['Damage',st.damage,base.damage,1],['RPM',st.rpm,base.rpm,1],['Recoil',st.recoil,base.recoil,-1],['Spread',st.spread,base.spread,-1],['ADS',st.adsTime,base.adsTime,-1],['Zoom',st.zoom,base.zoom,1]];
+    // [label, current, baseline, betterDirection(+1 higher=better / -1 lower=better)]
+    const rows=[
+      ['Damage',st.damage,bare.damage,1],['RPM',st.rpm,bare.rpm,1],
+      ['Recoil',st.recoil,bare.recoil,-1],['Spread',st.spread,bare.spread,-1],
+      ['ADS',st.adsTime,bare.adsTime,-1],['Zoom',st.zoom,bare.zoom,1],
+      ['Mag',st.mag,bare.mag,1],['Reload',st.reload,bare.reload,-1],
+      ['Range',st.range,bare.range,1],['Velocity',st.velocity,bare.velocity,1],
+      ['Handling',st.handling,bare.handling,1],['Mobility',st.mobility,bare.mobility,1],
+      ['Hip Acc',st.hipAccuracy,bare.hipAccuracy,1],
+    ];
     const statHTML=rows.map(r=>{ const cur=r[1], bs=r[2], better=r[3]; let cls=''; if(Math.abs(cur-bs)>1e-6) cls=((cur>bs)===(better>0))?'up':'dn'; const fmt=v=>(Math.round(v*1000)/1000); return `<div class="bpstat"><span class="sl">${r[0]}</span><span class="sv ${cls}">${fmt(cur)}</span></div>`; }).join('');
     $('modCard').innerHTML=`<div class="eb">Gunsmith // Live Render</div><div class="shophead"><h1 style="margin:0">${it.def.name}</h1><div class="creditpill">${Object.keys(it.inst.attachments||{}).length}/${wDef.slots.length} slots</div></div>
       <div class="bpstage" id="bpstage">${cards}</div>
