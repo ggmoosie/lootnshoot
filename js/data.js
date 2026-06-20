@@ -410,3 +410,95 @@ Object.assign(DATA.iconId, {
   att_holo:'🟢', att_comp:'🧱', att_brake:'🔥', att_anglegrip:'📐', att_stock_tac:'🪵',
   att_stock_light:'🦴', att_laser:'🔆', att_mag_ext:'🔋', att_mag_quick:'⚡', att_barrel_long:'📏', att_barrel_short:'➖',
 });
+
+/* ════════════════════════════════════════════════════════════════════════════
+   SECTION: AMMO TYPES + MAGAZINE FEED  (added by feat/lns-ammo-mags)
+   Self-contained content block — appended via Object.assign / push so it never
+   collides with the literals above (parallel agents auto-merge). Owns: the ammo
+   TYPE table (FMJ / AP / HP / Tracer per caliber) with stat effects, the matching
+   per-type ammo ITEM defs (so each variant is its own lootable/buyable stack),
+   plus their icons + vendor stock + loot seeding. NO behavior here — pure data.
+   weapons.js reads DATA.ammoTypes to modify the shot and to feed/switch the mag.
+
+   --- ammo TYPE stat-effect model (all multipliers are 1.0 = baseline) ---
+     dmg     : MULTIPLIER on the weapon's per-shot damage.
+     pen     : penetration 0..1 — fraction of a target's flat armor damage-
+               reduction (dr) this round IGNORES. 0 = armor fully applies (the
+               old behavior); 1 = armor does nothing. Ties straight into the
+               gear `dr` mitigation already in inventory.js/player.js — weapons.js
+               folds it into the enemy-hit math as effectiveDr = dr*(1-pen).
+     range   : MULTIPLIER on effective + max range (muzzle velocity flavor).
+     recoil  : MULTIPLIER on recoil (hotter rounds kick more).
+     tracer  : bool — draws a bright tracer line (cosmetic; weapons.js tints it).
+     color   : tracer / round tint (also reused for the inventory swatch vibe).
+     label   : short tag for HUD / tooltips (FMJ, AP, HP, TR).
+   Each entry also carries `cal` so weapons.js can match it to the gun, and `item`
+   = the inventory item id that this type is drawn from on reload.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+// Per-type ammo ITEM defs — one stack per (caliber × type). The plain rounds that
+// already exist (ammo_556 / ammo_9mm / ammo_762) stay as the FMJ baseline and are
+// mapped in DATA.ammoTypes below, so legacy loot/recipes/vendor keep working.
+Object.assign(DATA.items, {
+  // 5.56 family
+  ammo_556_ap:{name:'5.56 AP',     type:'ammo', cal:'556', ammoType:'556_ap', size:[1,1], stack:60, value:4, rarity:2},
+  ammo_556_hp:{name:'5.56 HP',     type:'ammo', cal:'556', ammoType:'556_hp', size:[1,1], stack:60, value:3, rarity:2},
+  ammo_556_tr:{name:'5.56 Tracer', type:'ammo', cal:'556', ammoType:'556_tr', size:[1,1], stack:60, value:3, rarity:2},
+  // 9mm family
+  ammo_9mm_ap:{name:'9mm AP',      type:'ammo', cal:'9mm', ammoType:'9mm_ap', size:[1,1], stack:60, value:3, rarity:2},
+  ammo_9mm_hp:{name:'9mm HP',      type:'ammo', cal:'9mm', ammoType:'9mm_hp', size:[1,1], stack:60, value:2, rarity:2},
+  // 7.62 family
+  ammo_762_ap:{name:'7.62 AP',     type:'ammo', cal:'762', ammoType:'762_ap', size:[1,1], stack:40, value:7, rarity:3},
+  ammo_762_hp:{name:'7.62 HP',     type:'ammo', cal:'762', ammoType:'762_hp', size:[1,1], stack:40, value:6, rarity:3},
+});
+
+// The ammo TYPE table. id -> stat effects. `item` ties a type to its stack; the
+// baseline FMJ types point back at the original plain ammo items.
+DATA.ammoTypes = {
+  // ---- 5.56 ----
+  '556_fmj':{ cal:'556', item:'ammo_556',    label:'FMJ', dmg:1.00, pen:0.30, range:1.00, recoil:1.00, tracer:false, color:0xffd27a },
+  '556_ap': { cal:'556', item:'ammo_556_ap', label:'AP',  dmg:0.92, pen:0.85, range:1.10, recoil:1.08, tracer:false, color:0xbfe0ff },
+  '556_hp': { cal:'556', item:'ammo_556_hp', label:'HP',  dmg:1.35, pen:0.05, range:0.85, recoil:0.95, tracer:false, color:0xff8a6a },
+  '556_tr': { cal:'556', item:'ammo_556_tr', label:'TR',  dmg:0.98, pen:0.30, range:1.05, recoil:1.00, tracer:true,  color:0x7afcff },
+  // ---- 9mm ----
+  '9mm_fmj':{ cal:'9mm', item:'ammo_9mm',    label:'FMJ', dmg:1.00, pen:0.20, range:1.00, recoil:1.00, tracer:false, color:0xffd27a },
+  '9mm_ap': { cal:'9mm', item:'ammo_9mm_ap', label:'AP',  dmg:0.90, pen:0.75, range:1.08, recoil:1.06, tracer:false, color:0xbfe0ff },
+  '9mm_hp': { cal:'9mm', item:'ammo_9mm_hp', label:'HP',  dmg:1.40, pen:0.04, range:0.80, recoil:0.94, tracer:false, color:0xff8a6a },
+  // ---- 7.62 ----
+  '762_fmj':{ cal:'762', item:'ammo_762',    label:'FMJ', dmg:1.00, pen:0.40, range:1.00, recoil:1.00, tracer:false, color:0xffd27a },
+  '762_ap': { cal:'762', item:'ammo_762_ap', label:'AP',  dmg:0.95, pen:0.92, range:1.12, recoil:1.10, tracer:false, color:0xbfe0ff },
+  '762_hp': { cal:'762', item:'ammo_762_hp', label:'HP',  dmg:1.32, pen:0.08, range:0.85, recoil:0.96, tracer:false, color:0xff8a6a },
+};
+for(const k in DATA.ammoTypes) DATA.ammoTypes[k].id=k;
+
+// default loaded type per caliber (the FMJ baseline) — weapons.js falls back here
+DATA.ammoDefault = { '556':'556_fmj', '9mm':'9mm_fmj', '762':'762_fmj' };
+// stamp ammoType onto the original plain rounds so they read as FMJ everywhere
+for(const k in DATA.ammoDefault){ const t=DATA.ammoTypes[DATA.ammoDefault[k]]; const it=DATA.items[t.item]; if(it&&!it.ammoType) it.ammoType=t.id; }
+
+// new ammo items carry their own id (the early items-stamp loop already ran)
+for(const k in DATA.items) if(!DATA.items[k].id) DATA.items[k].id=k;
+
+// icons for the new ammo variants (emoji stand-ins, matches DATA.iconId style)
+Object.assign(DATA.iconId, {
+  ammo_556_ap:'🔵', ammo_556_hp:'🟥', ammo_556_tr:'💠',
+  ammo_9mm_ap:'🔹', ammo_9mm_hp:'🟧',
+  ammo_762_ap:'🔷', ammo_762_hp:'🟫',
+});
+
+// vendor stock for the specialty rounds (appended, never rewritten)
+DATA.vendor.push('ammo_556_ap','ammo_556_hp','ammo_556_tr','ammo_9mm_ap','ammo_9mm_hp','ammo_762_ap','ammo_762_hp');
+
+// seed specialty ammo into the raid loot pools (push -> merge-safe vs the tables above)
+DATA.loot.enemy_drop.push({id:'ammo_556_ap',w:2,min:6,max:16},{id:'ammo_9mm_hp',w:2,min:6,max:16});
+DATA.loot.cont_weapon.push(
+  {id:'ammo_556_ap',w:3,min:15,max:40},{id:'ammo_556_hp',w:3,min:15,max:40},{id:'ammo_556_tr',w:2,min:15,max:40},
+  {id:'ammo_9mm_ap',w:3,min:15,max:40},{id:'ammo_9mm_hp',w:3,min:15,max:40},
+  {id:'ammo_762_ap',w:2,min:10,max:24},{id:'ammo_762_hp',w:2,min:10,max:24});
+DATA.loot.crate_rare.push({id:'ammo_762_ap',w:2,min:10,max:24},{id:'ammo_556_ap',w:2,min:15,max:40});
+
+// printable specialty ammo (additive recipes; the FMJ printers stay above)
+if(Array.isArray(DATA.recipes)) DATA.recipes.push(
+  {id:'r_556_ap', name:'Print 5.56 AP (x30)', station:'printer', out:{id:'ammo_556_ap',qty:30}, in:[{id:'mat_filament',qty:2},{id:'mat_scrap',qty:2},{id:'mat_elec',qty:1}]},
+  {id:'r_762_ap', name:'Print 7.62 AP (x20)', station:'printer', out:{id:'ammo_762_ap',qty:20}, in:[{id:'mat_filament',qty:3},{id:'mat_scrap',qty:2},{id:'mat_elec',qty:1}]},
+  {id:'r_9mm_hp', name:'Print 9mm HP (x30)',  station:'printer', out:{id:'ammo_9mm_hp',qty:30}, in:[{id:'mat_filament',qty:2},{id:'mat_scrap',qty:1}]});
