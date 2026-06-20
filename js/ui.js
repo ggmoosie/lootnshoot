@@ -43,7 +43,16 @@ export const UI = (function(){
     const hp=Math.max(0,Math.round(pl.health)); $('hpF').style.width=(hp/pl.maxHealth*100)+'%'; $('hpT').textContent=`${hp}/${Math.round(pl.maxHealth)}`;
     $('stmF').style.width=(pl.stamina/pl.maxStamina*100)+'%';
     const w=Weapons.activeItem(); const st=w?Weapons.stats(w):null;
-    $('amN').innerHTML = w?`<span class="mg">${w.inst.ammo}</span> <span class="rs">/ ∞</span>`:'<span class="mg">—</span>';
+    // ammo readout: rounds-in-mag / reserve-of-the-loaded-type, plus the loaded
+    // ammo TYPE so the X-key ammo cycling (FMJ/AP/HP/TR) is legible. Reserve is the
+    // real carried count (raid: rig+pack, hub: stash) — the ammo/mags system feeds
+    // reload from it, so the HUD shows it instead of the old fake ∞.
+    if(w){
+      const reserve = Weapons.reserveOf? Weapons.reserveOf(w) : 0;
+      const at = Weapons.loadedType? Weapons.loadedType(w) : null;
+      $('amN').innerHTML = `<span class="mg">${w.inst.ammo}</span> <span class="rs${reserve<=0?' out':''}">/ ${reserve}</span>`;
+      $('atype').textContent = (S.mode===MODE.RAID && at) ? at.label : '';
+    } else { $('amN').innerHTML='<span class="mg">—</span>'; $('atype').textContent=''; }
     $('amN').classList.toggle('low', !!(w&&st&&w.inst.ammo<=Math.ceil(st.mag*0.25)));
     $('wpn').textContent = w?w.def.name:'UNARMED';
     $('fmode').textContent = (S.mode===MODE.RAID&&w)?Weapons.modeOf(w).toUpperCase():'';

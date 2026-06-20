@@ -32,9 +32,12 @@
   #objX{font-size:15px;margin-top:2px;}
   #zone{font-size:11px;color:var(--dim);letter-spacing:2px;margin-top:4px;}
 
-  #threats{left:50%;top:18px;transform:translateX(-50%);text-align:center;display:none;}
-  #thN{font-size:20px;color:var(--bad);font-weight:bold;}
-  #thL{font-size:10px;letter-spacing:3px;color:var(--dim);text-transform:uppercase;}
+  /* hostiles counter sits just BELOW the compass band (compass = y14–36) so the
+     two never overlap in the top-centre; compact single-line readout. */
+  #threats{left:50%;top:44px;transform:translateX(-50%);text-align:center;display:none;
+    background:rgba(8,10,12,.45);border:1px solid var(--line);border-radius:6px;padding:3px 12px;line-height:1;}
+  #thN{font-size:18px;color:var(--bad);font-weight:bold;}
+  #thL{font-size:9px;letter-spacing:3px;color:var(--dim);text-transform:uppercase;margin-top:1px;}
 
   #wallet{right:28px;top:20px;text-align:right;}
   #cr{font-size:24px;color:var(--go);font-weight:bold;}
@@ -60,6 +63,10 @@
   #nade{font-size:11px;color:var(--dim);margin-top:4px;}
   #fmode{font-size:11px;letter-spacing:2px;color:var(--go);margin-top:2px;font-family:var(--mono);}
   #amN.low{color:var(--bad);}
+  #amN .rs.out{color:var(--bad);}
+  /* loaded ammo type chip (FMJ / AP / HP / TR) — sits under fire-mode in raid */
+  #atype{font-size:11px;letter-spacing:2px;color:var(--blue);margin-top:2px;font-family:var(--mono);}
+  #atype:empty{display:none;}
   #stance{font-family:var(--mono);font-size:10px;color:var(--amber);border:1px solid var(--amber-d);padding:0 4px;margin-left:6px;}
   /* kill/hit marker */
   #hit.kill{width:30px;height:30px;}
