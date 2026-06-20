@@ -23,6 +23,12 @@ export const Weapons = (function(){
   let lastShot=0, reloading=false, reloadEnd=0;
   let gun=null, muzzle=null, attachGroup=null, lastAttachSig='', laserDot=null;
   let prevFire=false, burstLeft=0, recoilDebt=0, bobT=0, swayX=0, swayY=0, lastYaw=0, lastPitch=0;
+  // ---- holster / draw state (feat/lns-weapons) ----
+  // Weapons SPAWN HOLSTERED. `holstered` gates fire/ADS and drops the viewmodel
+  // to a lowered carry pose. `drawAnim`/`holsterAnim`/`swapAnim` are 0..1 timers
+  // that drive the equip / unequip / swap viewmodel animation PLACEHOLDERS in
+  // update() (visual stubs/hooks — real animation art can replace the math later).
+  let holstered=true, drawAnim=0, holsterAnim=0, swapAnim=0, reticleEl=null;
 
   function modeOf(it){ const modes=DATA.weapons[it.def.weapon].modes||['auto']; if(!it.inst.mode||!modes.includes(it.inst.mode)) it.inst.mode=modes[0]; return it.inst.mode; }
   function cycleMode(){ const it=activeItem(); if(!it) return; const modes=DATA.weapons[it.def.weapon].modes||['auto']; if(modes.length<2){ UI.toast(modes[0].toUpperCase()+' only','neu'); return; }
@@ -40,6 +46,10 @@ export const Weapons = (function(){
     const fm=new T.SpriteMaterial({color:0xffcc55,transparent:true,opacity:0,depthTest:false});
     muzzle=new T.Sprite(fm); muzzle.scale.set(.4,.4,.4); muzzle.position.set(.22,-.17,-1.05); g.add(muzzle);
     GFX.camera.add(g); gun=g;
+    // start in the HOLSTERED carry pose (lowered + tilted) so the weapon reads as
+    // put-away on spawn / in the safehouse before the first draw. update() drives
+    // the pose once in a raid; this seeds the resting holstered look beforehand.
+    g.position.set(0,-0.5,0.22); g.rotation.x=1.1;
     // laser dot: a small red sprite that lives in the WORLD (added to the scene,
     // not the camera) so it lands on whatever the muzzle points at. Hidden until
     // a LASER attachment is installed; positioned each frame in update().
@@ -54,9 +64,18 @@ export const Weapons = (function(){
     if(sig===lastAttachSig) return; lastAttachSig=sig;
     while(attachGroup.children.length) attachGroup.remove(attachGroup.children[0]);
     if(!it) return; const att=it.inst.attachments||{}; const dark=new T.MeshStandardMaterial({color:0x101316,roughness:.5,metalness:.6});
-    if(att.optic){ const scope=att.optic==='att_scope';
+    if(att.optic){ const opEff=DATA.attachments[att.optic]; const scope=(opEff&&opEff.reticle)?opEff.reticle==='crosshair':att.optic==='att_scope';
       const mount=new T.Mesh(new T.BoxGeometry(.05,.05,scope?.26:.1), dark); mount.position.set(.22,-.10,scope?-.62:-.6); attachGroup.add(mount);
-      const lens=new T.Mesh(new T.CylinderGeometry(scope?.045:.03,scope?.045:.03,.04,10), new T.MeshStandardMaterial({color:scope?0x224455:0x551111,emissive:scope?0x113344:0x440808,emissiveIntensity:.6})); lens.rotation.x=Math.PI/2; lens.position.set(.22,-.08,scope?-.5:-.55); attachGroup.add(lens); }
+      if(scope){
+        const lens=new T.Mesh(new T.CylinderGeometry(.045,.045,.04,12), new T.MeshStandardMaterial({color:0x224455,emissive:0x113344,emissiveIntensity:.6})); lens.rotation.x=Math.PI/2; lens.position.set(.22,-.08,-.5); attachGroup.add(lens);
+      } else {
+        // RED-DOT / HOLO: a hollow RING housing (TorusGeometry, NOT a solid disc)
+        // with a small glowing DOT floating at its center — a functional reticle.
+        const eff=DATA.attachments[att.optic]; const dot=parseInt((eff&&eff.reticleColor||'#ff3b30').slice(1),16)||0xff3b30;
+        const ring=new T.Mesh(new T.TorusGeometry(.032,.008,8,16), dark); ring.position.set(.22,-.08,-.55); attachGroup.add(ring);
+        const glow=new T.Mesh(new T.SphereGeometry(.008,8,8), new T.MeshStandardMaterial({color:dot,emissive:dot,emissiveIntensity:1.4})); glow.position.set(.22,-.08,-.55); attachGroup.add(glow);
+      }
+    }
     if(att.muzzle){ const sup=att.muzzle==='att_suppressor'; const dev=new T.Mesh(new T.CylinderGeometry(sup?.04:.05,sup?.04:.05,sup?.2:.1,10), dark); dev.rotation.x=Math.PI/2; dev.position.set(.22,-.17,sup?-1.0:-.95); attachGroup.add(dev); }
     // foregrip (and legacy 'tactical' grips from older saves render the same)
     if(att.foregrip||att.tactical){ const fg=new T.Mesh(new T.BoxGeometry(.05,.1,.06), dark); fg.position.set(.22,-.27,-.72); attachGroup.add(fg); }
@@ -114,16 +133,29 @@ export const Weapons = (function(){
     const att = item.inst.attachments || {};
     const tint = id => { const d = DATA.items[id]; return rarityColor(d?d.rarity||1:1); };
     const attMat = id => new T.MeshStandardMaterial({color:tint(id), roughness:.4, metalness:.5});
-    if(att.optic){ const scope = att.optic==='att_scope';
+    if(att.optic){ const opEff = DATA.attachments[att.optic]; const scope = (opEff&&opEff.reticle)?opEff.reticle==='crosshair':att.optic==='att_scope';
       // mount rail + optic body sitting on top of the receiver
       const mount = new T.Mesh(new T.BoxGeometry(scope?0.26:0.1, 0.04, 0.04), dark());
       mount.position.set(0.0, 0.12, 0); g.add(mount);
-      const optic = new T.Mesh(new T.CylinderGeometry(scope?0.04:0.03, scope?0.04:0.03, scope?0.22:0.08, 14), attMat(att.optic));
-      optic.rotation.z = Math.PI/2; optic.position.set(0.0, 0.17, 0); g.add(optic);
-      // glowing lens at the rear of the optic
-      const lens = new T.Mesh(new T.CircleGeometry(scope?0.035:0.026, 16),
-        new T.MeshStandardMaterial({color:scope?0x224455:0x551111, emissive:scope?0x113344:0x440808, emissiveIntensity:.7, side:T.DoubleSide}));
-      lens.rotation.y = -Math.PI/2; lens.position.set(-(scope?0.11:0.04), 0.17, 0); g.add(lens);
+      if(scope){
+        const optic = new T.Mesh(new T.CylinderGeometry(0.04, 0.04, 0.22, 14), attMat(att.optic));
+        optic.rotation.z = Math.PI/2; optic.position.set(0.0, 0.17, 0); g.add(optic);
+        // glowing lens at the rear of the scope
+        const lens = new T.Mesh(new T.CircleGeometry(0.035, 16),
+          new T.MeshStandardMaterial({color:0x224455, emissive:0x113344, emissiveIntensity:.7, side:T.DoubleSide}));
+        lens.rotation.y = -Math.PI/2; lens.position.set(-0.11, 0.17, 0); g.add(lens);
+      } else {
+        // RED-DOT / HOLO in the gunsmith preview: a hollow RING (torus) + a glowing
+        // center DOT — matches the in-game reticle (not a flat opaque disc).
+        const eff=DATA.attachments[att.optic]; const dot=parseInt((eff&&eff.reticleColor||'#ff3b30').slice(1),16)||0xff3b30;
+        const optic = new T.Mesh(new T.CylinderGeometry(0.03, 0.03, 0.08, 14), attMat(att.optic));
+        optic.rotation.z = Math.PI/2; optic.position.set(0.0, 0.17, 0); g.add(optic);
+        const ring = new T.Mesh(new T.TorusGeometry(0.026, 0.006, 8, 18), dark());
+        ring.rotation.y = -Math.PI/2; ring.position.set(-0.04, 0.17, 0); g.add(ring);
+        const glow = new T.Mesh(new T.SphereGeometry(0.007, 8, 8),
+          new T.MeshStandardMaterial({color:dot, emissive:dot, emissiveIntensity:1.5}));
+        glow.position.set(-0.04, 0.17, 0); g.add(glow);
+      }
     }
     if(att.barrel){ // longer/shorter barrel sleeve over the muzzle end
       const lng = att.barrel==='att_barrel_long'; const len = lng?0.34:0.12;
@@ -193,8 +225,87 @@ export const Weapons = (function(){
     s.zoom=clamp(s.zoom||1, 1, 8); s.handling=clamp(s.handling,0.5,2); s.mobility=clamp(s.mobility,0.6,1.6);
     return s;
   }
-  function switchTo(slot){ if(!S.profile.equip[slot]) return; S.player.activeSlot=slot; reloading=false; Audio.play('equip'); Events.emit('weapon:changed'); }
+  // ---- WEAPON SWAP: holster the current gun, switch slot, draw the new one.
+  // The swap animation is a PLACEHOLDER: a dip-down/raise-up viewmodel arc driven
+  // by swapAnim in update(). Swapping to the slot you already hold just re-draws.
+  function switchTo(slot){
+    if(!S.profile.equip[slot]) return; const same=S.player.activeSlot===slot;
+    S.player.activeSlot=slot; reloading=false; Audio.play('equip');
+    // swap = unequip-then-equip; if already drawn, route through the swap arc so
+    // the new gun visibly comes up. If holstered, just draw it.
+    swapAnim = same?0:1; holstered=false; drawAnim=1; holsterAnim=0;
+    Events.emit('weapon:changed');
+  }
+  // ---- HOLSTER / DRAW (equip / unequip) ---------------------------------------
+  // draw()    = bring the active weapon up to the ready pose (equip animation).
+  // holster() = lower it to the carry pose (unequip animation). Both kick a
+  // placeholder viewmodel animation; the holstered flag gates fire + ADS so a
+  // holstered gun can't shoot. toggleHolster() flips between the two.
+  function draw(){ if(!holstered && drawAnim<=0) return; holstered=false; drawAnim=1; holsterAnim=0; Audio.play('equip'); Events.emit('weapon:changed'); }
+  function holster(){ if(holstered) return; holstered=true; holsterAnim=1; drawAnim=0; reloading=false; Audio.play('equip'); Events.emit('weapon:changed'); }
+  function toggleHolster(){ holstered?draw():holster(); }
+  function isHolstered(){ return holstered; }
   function ammoInMag(){ const it=activeItem(); return it?(it.inst.ammo||0):0; }
+
+  // the active optic's ADS sight picture: a reticle descriptor. With NO optic the
+  // gun uses its built-in IRON sights (so bare ADS is usable); an installed optic
+  // supplies its own reticle (red-dot ring+dot / holo / scope crosshair).
+  function sightOf(it){
+    it=it||activeItem(); if(!it) return DATA.ironSight;
+    const opticId=(it.inst.attachments||{}).optic;
+    const eff=opticId?DATA.attachments[opticId]:null;
+    if(eff&&eff.reticle) return { reticle:eff.reticle, color:eff.reticleColor||'#cfe8ff', aimDot:true, optic:opticId };
+    return DATA.ironSight;   // no optic -> iron sights
+  }
+
+  // ---- ADS RETICLE OVERLAY (iron sights + red-dot + scope crosshair) ----------
+  // A screen-space DOM reticle drawn over the HUD when aiming. The CENTER DOT sits
+  // exactly at screen center — the same point the ADS hitscan converges on — so it
+  // doubles as the functional aim point. Built once, restyled per sight type.
+  function ensureReticle(){
+    if(reticleEl) return reticleEl;
+    const hud=document.getElementById('hud')||document.body;
+    const el=document.createElement('div'); el.id='adsReticle';
+    el.style.cssText='position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);'
+      +'width:0;height:0;pointer-events:none;z-index:11;opacity:0;transition:opacity .08s linear;'
+      +'will-change:opacity;';
+    hud.appendChild(el); reticleEl=el; return el;
+  }
+  // paint the reticle for a given sight descriptor. iron = front-post-in-rear-notch;
+  // reddot = a glowing RING with a bright center DOT (NOT an opaque circle); holo
+  // reuses reddot with a wider ring; scope = a fine crosshair. All center-anchored.
+  function paintReticle(sight){
+    const el=ensureReticle(); const sig=sight.reticle+'|'+sight.color;
+    if(el.dataset.sig===sig) return; el.dataset.sig=sig;
+    const c=sight.color||'#cfe8ff'; el.innerHTML='';
+    const add=css=>{ const d=document.createElement('i'); d.style.cssText='position:absolute;left:50%;top:50%;'+css; el.appendChild(d); };
+    if(sight.reticle==='reddot'){
+      // RING (transparent middle) + glowing center DOT — a functional reticle, not
+      // an opaque blob. Ring is a hollow circle; dot is the precise aim point.
+      add(`width:26px;height:26px;margin:-13px 0 0 -13px;border:2px solid ${c};border-radius:50%;`
+        +`box-shadow:0 0 6px ${c}aa, inset 0 0 4px ${c}66;background:transparent;`);
+      add(`width:5px;height:5px;margin:-2.5px 0 0 -2.5px;border-radius:50%;background:${c};`
+        +`box-shadow:0 0 8px 2px ${c}, 0 0 14px ${c}aa;`);
+    } else if(sight.reticle==='crosshair'){
+      // scope crosshair: four thin arms + tiny center dot (the aim point)
+      const arm=`background:${c};box-shadow:0 0 3px ${c};`;
+      add(`width:1.5px;height:16px;margin:-22px 0 0 -.75px;${arm}`);
+      add(`width:1.5px;height:16px;margin:6px 0 0 -.75px;${arm}`);
+      add(`width:16px;height:1.5px;margin:-.75px 0 0 -22px;${arm}`);
+      add(`width:16px;height:1.5px;margin:-.75px 0 0 6px;${arm}`);
+      add(`width:3px;height:3px;margin:-1.5px 0 0 -1.5px;border-radius:50%;background:${c};box-shadow:0 0 5px ${c};`);
+    } else {
+      // IRON sights: a rear notch (two posts) framing a front post at center.
+      const metal=`background:${c};box-shadow:0 0 2px rgba(0,0,0,.7);opacity:.92;`;
+      // rear notch — left + right posts with a gap at center
+      add(`width:5px;height:11px;margin:-1px 0 0 -16px;${metal}`);
+      add(`width:5px;height:11px;margin:-1px 0 0 11px;${metal}`);
+      // front post (the aim tip) — a thin blade rising into the notch gap
+      add(`width:3px;height:13px;margin:-3px 0 0 -1.5px;${metal}`);
+      // bright tip dot at the precise aim point (top of the front post = center)
+      add(`width:3px;height:3px;margin:-3.5px 0 0 -1.5px;border-radius:50%;background:#fff;box-shadow:0 0 4px #fff;`);
+    }
+  }
 
   // ===========================================================================
   // AMMO TYPES + MAGAZINE FEED  (feat/lns-ammo-mags)
@@ -328,7 +439,7 @@ export const Weapons = (function(){
   }
 
   function fire(){
-    if(reloading) return false; const it=activeItem(); if(!it) return false; const st=stats(it);
+    if(reloading || holstered) return false; const it=activeItem(); if(!it) return false; const st=stats(it);
     if(it.inst.ammo<=0){ reload(); return false; }
     // active ammo type modifies the shot (damage / pen / range / recoil / tracer)
     const at = loadedType(it) || { dmg:1, pen:0.3, range:1, recoil:1, tracer:false, color:0xffd27a };
@@ -395,6 +506,28 @@ export const Weapons = (function(){
     const code = (Input.code && Input.code('ammotype')) || (DATA.binds && DATA.binds.ammotype) || 'KeyX';
     if(e.code===code && !e.repeat) cycleAmmo();
   });
+  // holster/draw toggle: honors an optional rebindable 'holster' bind, else KeyH-
+  // adjacent default KeyJ (HEAL already owns KeyH). Lets the player put the gun away.
+  addEventListener('keydown', e=>{
+    if(S.mode!==MODE.RAID) return;
+    const code = (Input.code && Input.code('holster')) || (DATA.binds && DATA.binds.holster) || 'KeyJ';
+    if(e.code===code && !e.repeat) toggleHolster();
+  });
+  // weapons SPAWN HOLSTERED, then auto-DRAW on entering a raid (so the draw/equip
+  // animation plays at deploy). Returning to RAID from a PAUSE/MENU round-trip
+  // PRESERVES the current holster state (don't re-draw on every unpause); only a
+  // FRESH raid entry (from HUB / transit / result) re-spawns holstered + draws.
+  let _prevMode=S.mode;
+  Events.on('mode', m=>{
+    const from=_prevMode; _prevMode=m;
+    if(m===MODE.RAID){
+      if(from===MODE.PAUSE || from===MODE.MENU) return; // resume/close menu: keep state
+      holstered=true; drawAnim=0; holsterAnim=0; swapAnim=0; draw();   // fresh deploy
+    } else if(m===MODE.HUB || m===MODE.RESULT || m===MODE.BOOT){
+      // out of the field: re-holster so the next deploy starts put-away
+      holstered=true; drawAnim=0; holsterAnim=0; swapAnim=0; if(reticleEl) reticleEl.style.opacity='0';
+    } else if(reticleEl){ reticleEl.style.opacity='0'; }  // PAUSE/MENU: just hide reticle
+  });
   function canMelee(){ return S.mode===MODE.RAID && (Clock.now-lastMelee)>=DATA.melee.cooldown && S.player.stamina>=DATA.melee.minStamina; }
   function melee(){
     const M=DATA.melee;
@@ -425,9 +558,15 @@ export const Weapons = (function(){
     if(reloading && Clock.now>=reloadEnd) finishReload();
     // recoil recovery: spring the kicked aim back down
     if(recoilDebt>0.0001){ const rec=recoilDebt*Math.min(1,dt*7); GFX.pitch.rotation.x=clamp(GFX.pitch.rotation.x-rec,-1.5,1.5); recoilDebt-=rec; } else recoilDebt=0;
-    if(S.mode!==MODE.RAID){ prevFire=false; burstLeft=0; return; }
+    if(S.mode!==MODE.RAID){ prevFire=false; burstLeft=0; if(reticleEl) reticleEl.style.opacity='0'; return; }
+    // decay the equip / unequip / swap animation PLACEHOLDER timers
+    if(drawAnim>0)    drawAnim    = Math.max(0, drawAnim    - dt*3.2);
+    if(holsterAnim>0) holsterAnim = Math.max(0, holsterAnim - dt*3.6);
+    if(swapAnim>0)    swapAnim    = Math.max(0, swapAnim    - dt*2.6);
     const it=activeItem();
-    const wantFire = Input.firing && (Input.locked||Input.isTouch) && !!it;
+    // a HOLSTERED gun can't fire (fire() also guards this) — only let intents
+    // through while drawn so burst/auto don't queue against a put-away weapon.
+    const wantFire = !holstered && Input.firing && (Input.locked||Input.isTouch) && !!it;
     const mode = it?modeOf(it):'auto';
     if(wantFire && !prevFire){ if(mode==='semi') fire(); else if(mode==='burst') burstLeft=3; }
     if(mode==='auto' && wantFire) fire();
@@ -438,7 +577,9 @@ export const Weapons = (function(){
     if(meleeAnim>0) meleeAnim=Math.max(0, meleeAnim-dt*4.5);
     // ---- viewmodel: ADS pose, head bob, look-sway, wall pushback, reload dip ----
     if(gun){
-      const moving = Player.isMoving&&Player.isMoving(); const ads=S.player.ads;
+      const moving = Player.isMoving&&Player.isMoving();
+      // ADS only counts when the gun is actually DRAWN (holstered = no aiming)
+      const ads = S.player.ads && !holstered;
       const stv = it?stats(it):null; const handling = stv?stv.handling:1;
       bobT += dt*(moving?9:3);
       const dy=GFX.yaw.rotation.y-lastYaw, dp=GFX.pitch.rotation.x-lastPitch; lastYaw=GFX.yaw.rotation.y; lastPitch=GFX.pitch.rotation.x;
@@ -455,6 +596,17 @@ export const Weapons = (function(){
       if(reloading){ const st2=stats(it); const dur=(st2?st2.reload:1)*Progression.reloadMult(); const prog=clamp(1-(reloadEnd-Clock.now)/Math.max(0.01,dur),0,1); const dip=Math.sin(prog*Math.PI); ty-=dip*0.14; tz+=dip*0.04; trx+=dip*0.8; }
       // melee lunge: a quick forward jab + downward rotation, eased by meleeAnim
       if(meleeAnim>0){ const j=Math.sin(meleeAnim*Math.PI); tz-=j*0.34; tx+=j*0.06; trx-=j*0.7; }
+      // ---- HOLSTER / DRAW / SWAP viewmodel animation PLACEHOLDERS ----
+      // Stub poses (no skinned art yet): the gun drops down + tilts away when
+      // holstered or mid-swap, and rises into place as the draw animation plays.
+      // holstered-rest pose (fully put away)
+      if(holstered){ ty-=0.5; tz+=0.22; trx+=1.1; }
+      // draw arc (equip): a brief raise-from-low as drawAnim eases 1->0
+      if(drawAnim>0){ const d=drawAnim; ty-=d*0.42; tz+=d*0.12; trx+=d*0.9; }
+      // holster arc (unequip): lower-away as holsterAnim eases 1->0
+      if(holsterAnim>0){ const h=holsterAnim; ty-=h*0.42; tz+=h*0.12; trx+=h*0.9; }
+      // swap arc: a quick dip the new weapon comes up through (sin hump)
+      if(swapAnim>0){ const s=Math.sin(swapAnim*Math.PI); ty-=s*0.5; trx+=s*0.8; }
       // handling raises the pose-settle speed (better handling = snappier ADS)
       const k=Math.min(1,dt*(ads?16:9)*handling);
       gun.position.x += (tx-gun.position.x)*k; gun.position.y += (ty-gun.position.y)*k; gun.position.z += (tz-gun.position.z)*k;
@@ -463,10 +615,18 @@ export const Weapons = (function(){
       GFX.camera.position.x += (Math.sin(bobT*0.5)*0.014*hb - GFX.camera.position.x)*Math.min(1,dt*8);
       GFX.camera.position.y += (Math.abs(Math.sin(bobT))*0.02*hb - GFX.camera.position.y)*Math.min(1,dt*8);
     }
-    // dynamic crosshair: spread + ADS + movement
+    // effective ADS: aiming AND drawn. Used for crosshair/reticle/fov below.
+    const aiming = S.player.ads && !holstered;
+    // dynamic crosshair: spread + ADS + movement. Hidden while aiming (the ADS
+    // reticle takes over) and while holstered (no active sight picture).
     const st = it?stats(it):null; let gap=6;
-    if(st){ gap = (S.player.ads?2.5:6) + (st.spread*420) + (Player.isMoving&&Player.isMoving()?5:0) + recoilDebt*60; }
-    const ch=document.getElementById('crosshair'); if(ch) ch.style.setProperty('--g', Math.min(26,gap).toFixed(1)+'px');
+    if(st){ gap = (aiming?2.5:6) + (st.spread*420) + (Player.isMoving&&Player.isMoving()?5:0) + recoilDebt*60; }
+    const ch=document.getElementById('crosshair');
+    if(ch){ ch.style.setProperty('--g', Math.min(26,gap).toFixed(1)+'px'); ch.style.opacity=(aiming||holstered)?'0':''; }
+    // ADS reticle: iron sights by default, or the installed optic's reticle. The
+    // center dot sits at screen center = the aim point the hitscan converges on.
+    if(aiming && it){ const sight=sightOf(it); paintReticle(sight); const el=ensureReticle(); el.style.opacity='1'; }
+    else if(reticleEl){ reticleEl.style.opacity='0'; }
     // laser dot: project to the first solid the muzzle line hits (LASER mod only)
     if(laserDot){
       const on = !!(st && st.laser);
@@ -482,12 +642,15 @@ export const Weapons = (function(){
         laserDot.material.opacity = S.player.ads?0.35:0.85;   // dimmer when scoped
       }
     }
-    // ADS fov lerp
-    const want = S.player.ads ? GFX.baseFov/((st&&st.zoom)||1.3) : GFX.baseFov;
+    // ADS fov lerp — only zoom when actually aiming a DRAWN weapon
+    const want = aiming ? GFX.baseFov/((st&&st.zoom)||1.3) : GFX.baseFov;
     GFX.camera.fov += (want-GFX.camera.fov)*Math.min(1,dt*12); GFX.camera.updateProjectionMatrix();
-    S.player.ads = Input.ads;
+    // a holstered gun can't aim: drop the ADS intent so nothing downstream zooms.
+    S.player.ads = Input.ads && !holstered;
   }
   return { buildViewmodel, buildPreviewModel, stats, activeItem, switchTo, ammoInMag, reload, fire, throwGrenade, cycleMode, modeOf, melee, canMelee, update,
     // ammo-type / magazine-feed API (feat/lns-ammo-mags)
-    loadedType, loadedTypeId, availableTypes, reserveOf, setAmmo, cycleAmmo };
+    loadedType, loadedTypeId, availableTypes, reserveOf, setAmmo, cycleAmmo,
+    // holster/draw + sight API (fix/lns-weapons)
+    draw, holster, toggleHolster, isHolstered, sightOf };
 })();

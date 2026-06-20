@@ -14,7 +14,7 @@ DATA.items = {
   att_reddot:{name:'Red Dot',    type:'attachment', slot:'optic', size:[1,1], value:300, rarity:2},
   att_scope:{name:'4x Scope',    type:'attachment', slot:'optic', size:[2,1], value:650, rarity:3},
   att_suppressor:{name:'Suppressor', type:'attachment', slot:'muzzle', size:[1,1], value:450, rarity:3},
-  att_grip:{name:'Vert Grip',    type:'attachment', slot:'tactical', size:[1,1], value:150, rarity:2},
+  att_grip:{name:'Vert Grip',    type:'attachment', slot:'foregrip', size:[1,1], value:150, rarity:2},
   arm_lvl2:{name:'Vest II',  type:'armor', armor:30, size:[2,3], value:600, rarity:2},
   arm_lvl4:{name:'Vest IV',  type:'armor', armor:60, size:[2,3], value:1800, rarity:4},
   helm_lvl2:{name:'Helmet II', type:'helmet', armor:18, size:[2,2], value:400, rarity:2},
@@ -53,14 +53,24 @@ DATA.weapons = {
 // `add`    = ADDITIVE deltas (used where a multiplier is awkward, e.g. capacity
 //            and the 1.0-baselined handling/hipAccuracy/mobility scalars).
 // `zoom`   = sets the optic zoom outright. `quiet` = suppresses the shot.
+// `reticle`= (optics only) the ADS sight picture weapons.js draws: 'reddot' = a
+//            ring with a glowing center dot, 'crosshair' = scope crosshair. A gun
+//            with NO optic falls back to the built-in IRON sight picture so ADS is
+//            usable bare (see DATA.ironSight + Weapons reticle code).
 // The full set lives in the "GUNSMITH DEPTH" section below; the four originals
-// are kept here (att_grip moved optic->foregrip slot) so old saves still apply.
+// are kept here (att_grip moved tactical->foregrip slot) so old saves still apply.
 DATA.attachments = {
-  att_reddot:{slot:'optic', mods:{adsSpread:0.7, adsTime:0.95}, zoom:1.15},
-  att_scope:{slot:'optic', mods:{adsSpread:0.4, adsTime:1.2}, zoom:2.2},
+  att_reddot:{slot:'optic', mods:{adsSpread:0.7, adsTime:0.95}, zoom:1.15, reticle:'reddot', reticleColor:'#ff3b30'},
+  att_scope:{slot:'optic', mods:{adsSpread:0.4, adsTime:1.2}, zoom:2.2, reticle:'crosshair', reticleColor:'#cfe8ff'},
   att_suppressor:{slot:'muzzle', mods:{recoil:0.7, damage:0.96, spread:0.95}, quiet:true},
   att_grip:{slot:'foregrip', mods:{recoil:0.8, spread:0.85}, add:{handling:0.1}},
 };
+
+// ----- IRON SIGHTS: the default sight picture every gun has with NO optic. -----
+// Guns are usable in ADS bare — a simple front-post-in-rear-notch reticle drawn
+// by weapons.js when no `optic` attachment is installed. `aimDot` is the precise
+// center aim point (the post tip) the bare-ADS shot converges on. Pure data.
+DATA.ironSight = { reticle:'iron', color:'#e8e2d4', aimDot:true };
 
 // ----- enemy roles: behavior is parameterized, not hand-coded per enemy. -----
 DATA.enemies = {
@@ -367,8 +377,9 @@ for(const k in DATA.gunsmithItems){ DATA.gunsmithItems[k].id=k; DATA.items[k]=DA
 
 // ---- new attachment EFFECT defs (mods=multiplicative, add=additive) ----
 DATA.gunsmithAttachments = {
-  // OPTIC — holo: fast, mild zoom, tightens ADS spread
-  att_holo:{slot:'optic', mods:{adsSpread:0.6, adsTime:1.0}, zoom:1.4},
+  // OPTIC — holo: fast, mild zoom, tightens ADS spread. Holo reticle = a wider
+  // ring + center dot (rendered by the same 'reddot' sight-picture path).
+  att_holo:{slot:'optic', mods:{adsSpread:0.6, adsTime:1.0}, zoom:1.4, reticle:'reddot', reticleColor:'#5ef08a'},
   // MUZZLE — comp kills vertical recoil; brake trades sound for spread control
   att_comp:{slot:'muzzle', mods:{recoil:0.62, spread:0.92}},
   att_brake:{slot:'muzzle', mods:{recoil:0.55, adsSpread:1.06}},
@@ -400,6 +411,11 @@ DATA.melee = {
   minStamina:8,     // need at least this much stamina to swing
   noise:'sprint',   // Perception/DATA.noise key for the swing whoosh
 };
+
+// HOLSTER/DRAW keybind (weapons.js reads it; appended so the binds literal above
+// merges cleanly). Default KeyJ — KeyH is HEAL. Shows up in the Settings rebinder.
+Object.assign(DATA.binds, { holster:'KeyJ' });
+Object.assign(DATA.bindLabels, { holster:'Holster / Draw' });
 
 // register the new attachment items into the gunsmith-relevant loot/vendor pools
 // (appended, not rewritten, so the tables above merge cleanly)
@@ -769,10 +785,12 @@ DATA.contentItems = {
 for(const k in DATA.contentItems){ DATA.contentItems[k].id=k; DATA.items[k]=DATA.contentItems[k]; }
 
 DATA.contentAttachments = {
-  // OPTIC
-  att_lpvo:{slot:'optic', mods:{adsSpread:0.45, adsTime:1.1}, zoom:3.2},
-  att_canted:{slot:'optic', mods:{adsSpread:0.8, adsTime:0.92}, zoom:1.1},
-  att_thermal:{slot:'optic', mods:{adsSpread:0.4, adsTime:1.25}, zoom:3.6},
+  // OPTIC — reticles drive the ADS sight picture (see DATA.attachments header):
+  //   lpvo/thermal = magnified glass → scope crosshair; canted = mini backup
+  //   red-dot → ring+dot. Without `reticle` an optic would fall back to irons.
+  att_lpvo:{slot:'optic', mods:{adsSpread:0.45, adsTime:1.1}, zoom:3.2, reticle:'crosshair', reticleColor:'#cfe8ff'},
+  att_canted:{slot:'optic', mods:{adsSpread:0.8, adsTime:0.92}, zoom:1.1, reticle:'reddot', reticleColor:'#ff3b30'},
+  att_thermal:{slot:'optic', mods:{adsSpread:0.4, adsTime:1.25}, zoom:3.6, reticle:'crosshair', reticleColor:'#7afcad'},
   // MUZZLE — choke tightens spread hard (shotgun friendly); magnum brake = recoil
   att_choke:{slot:'muzzle', mods:{spread:0.55, adsSpread:0.7, range:1.1}},
   att_magbrake:{slot:'muzzle', mods:{recoil:0.5, spread:0.95, adsSpread:1.04}},
