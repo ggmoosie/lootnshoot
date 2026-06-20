@@ -52,6 +52,11 @@ export const Input = (function(){
   document.addEventListener('pointerlockerror',()=>{ if(wantLock) _retryRelock(); });
 
   addEventListener('keydown',e=>{
+    // Ignore keystrokes that belong to a focused form field (bug-report modal,
+    // any input/textarea/select, or contenteditable) so typing a report doesn't
+    // move/fire/trigger hotkeys. keyup stays unguarded so nothing sticks.
+    const t=e.target;
+    if(t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
     if(capture){ e.preventDefault(); if(e.code!=='Escape') capture.cb(e.code); capture=null; return; }
     keys[e.code]=true;
     const a=actionFor(e.code);
@@ -76,6 +81,12 @@ export const Input = (function(){
     if(e.code==='Escape'){ if(S.mode===MODE.MENU) UI.closeMenus(); else if(S.mode===MODE.PAUSE) UI.resume(); else if(S.mode===MODE.RAID) UI.pause(); else if(S.mode===MODE.HUB) UI.openStation('settings'); }
   });
   addEventListener('keyup',e=> keys[e.code]=false);
+
+  // Belt-and-suspenders: zero all held input. Called when an overlay/modal opens
+  // (e.g. the bug-report modal) so a key held at that instant can't stay "down"
+  // while focus is on a form field (keydown is guarded, so its keyup may still
+  // fire and clear it — but this makes a stuck key impossible either way).
+  function clearKeys(){ for(const k in keys) keys[k]=false; st.firing=false; st.ads=false; }
 
   GFX.dom.addEventListener('mousedown',e=>{ if(e.button===0&&S.mode===MODE.RAID&&st.locked) st.firing=true; if(e.button===2&&S.mode===MODE.RAID) st.ads=true; });
   addEventListener('mouseup',e=>{ if(e.button===0) st.firing=false; if(e.button===2) st.ads=false; });
@@ -171,6 +182,6 @@ export const Input = (function(){
     tap('bInv',()=>{ if(S.mode===MODE.HUB||S.mode===MODE.RAID) UI.toggleInventory(); });
   })();
 
-  Object.assign(st, { down, code, actionFor, beginCapture, applySettings, relock });
+  Object.assign(st, { down, code, actionFor, beginCapture, applySettings, relock, clearKeys });
   return st;
 })();
