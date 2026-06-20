@@ -37,19 +37,29 @@ DATA.items = {
 for(const k in DATA.items) DATA.items[k].id=k;   // each def carries its own id (serialize/icons/stacking rely on it)
 
 // ----- weapons: base stats. Computed stats apply attachment mods on top. -----
+// NOTE: `slots` now spans the full gunsmith slot set (see "GUNSMITH DEPTH"
+// section below). `velocity` (m/s, flavor + barrel scaling) and `hipAccuracy`
+// (1=baseline; lasers raise it, tightening hipfire spread) are new effective
+// stats with safe defaults applied in Weapons.stats().
 DATA.weapons = {
-  carbine:{name:'MK1 Carbine', cal:'556', damage:26, rpm:540, mag:30, reload:1.8, spread:0.013, adsSpread:0.003, adsTime:0.25, recoil:0.012, range:90, eff:58, zoom:1, modes:['auto','burst','semi'], slots:['optic','muzzle','tactical']},
-  smg:{name:'Vector SMG', cal:'9mm', damage:18, rpm:780, mag:25, reload:1.5, spread:0.022, adsSpread:0.007, adsTime:0.18, recoil:0.009, range:50, eff:26, zoom:1, modes:['auto','semi'], slots:['optic','muzzle','tactical']},
-  dmr:{name:'M14 DMR', cal:'762', damage:58, rpm:200, mag:20, reload:2.2, spread:0.006, adsSpread:0.001, adsTime:0.35, recoil:0.022, range:160, eff:135, zoom:1, modes:['semi'], slots:['optic','muzzle','tactical']},
-  pistol:{name:'P9 Sidearm', cal:'9mm', damage:20, rpm:380, mag:15, reload:1.2, spread:0.022, adsSpread:0.008, adsTime:0.15, recoil:0.01, range:40, eff:20, zoom:1, modes:['semi'], slots:['optic','muzzle']},
+  carbine:{name:'MK1 Carbine', cal:'556', damage:26, rpm:540, mag:30, reload:1.8, spread:0.013, adsSpread:0.003, adsTime:0.25, recoil:0.012, range:90, eff:58, velocity:880, zoom:1, modes:['auto','burst','semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  smg:{name:'Vector SMG', cal:'9mm', damage:18, rpm:780, mag:25, reload:1.5, spread:0.022, adsSpread:0.007, adsTime:0.18, recoil:0.009, range:50, eff:26, velocity:420, zoom:1, modes:['auto','semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  dmr:{name:'M14 DMR', cal:'762', damage:58, rpm:200, mag:20, reload:2.2, spread:0.006, adsSpread:0.001, adsTime:0.35, recoil:0.022, range:160, eff:135, velocity:850, zoom:1, modes:['semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  pistol:{name:'P9 Sidearm', cal:'9mm', damage:20, rpm:380, mag:15, reload:1.2, spread:0.022, adsSpread:0.008, adsTime:0.15, recoil:0.01, range:40, eff:20, velocity:380, zoom:1, modes:['semi'], slots:['optic','muzzle','laser','magazine','barrel']},
 };
 
-// ----- attachments: slot + stat multipliers (and special: zoom add). -----
+// ----- attachments: slot + stat effects. -----
+// `mods`   = MULTIPLICATIVE deltas applied to the named effective stat.
+// `add`    = ADDITIVE deltas (used where a multiplier is awkward, e.g. capacity
+//            and the 1.0-baselined handling/hipAccuracy/mobility scalars).
+// `zoom`   = sets the optic zoom outright. `quiet` = suppresses the shot.
+// The full set lives in the "GUNSMITH DEPTH" section below; the four originals
+// are kept here (att_grip moved optic->foregrip slot) so old saves still apply.
 DATA.attachments = {
-  att_reddot:{slot:'optic', mods:{adsSpread:0.7, adsTime:0.95}},
+  att_reddot:{slot:'optic', mods:{adsSpread:0.7, adsTime:0.95}, zoom:1.15},
   att_scope:{slot:'optic', mods:{adsSpread:0.4, adsTime:1.2}, zoom:2.2},
-  att_suppressor:{slot:'muzzle', mods:{recoil:0.7, damage:0.96}, quiet:true},
-  att_grip:{slot:'tactical', mods:{recoil:0.8, spread:0.85}},
+  att_suppressor:{slot:'muzzle', mods:{recoil:0.7, damage:0.96, spread:0.95}, quiet:true},
+  att_grip:{slot:'foregrip', mods:{recoil:0.8, spread:0.85}, add:{handling:0.1}},
 };
 
 // ----- enemy roles: behavior is parameterized, not hand-coded per enemy. -----
@@ -147,10 +157,10 @@ DATA.iconId = { ammo_556:'🟡', ammo_9mm:'⚪', ammo_762:'🟠', att_reddot:'�
 // ----- default keybinds (rebindable in Settings; persisted in profile.settings). -----
 DATA.binds = { forward:'KeyW', back:'KeyS', left:'KeyA', right:'KeyD', jump:'Space', crouch:'KeyC', sprint:'ShiftLeft',
   reload:'KeyR', interact:'KeyE', pickup:'KeyF', inventory:'Tab', weapon1:'Digit1', weapon2:'Digit2',
-  grenade:'KeyG', heal:'KeyH', drone:'KeyT', firemode:'KeyB' };
+  grenade:'KeyG', heal:'KeyH', drone:'KeyT', firemode:'KeyB', melee:'KeyV' };
 DATA.bindLabels = { forward:'Move Forward', back:'Move Back', left:'Strafe Left', right:'Strafe Right', jump:'Jump',
   crouch:'Crouch', sprint:'Sprint', reload:'Reload', interact:'Interact / Loot', pickup:'Pick Up Item',
-  inventory:'Inventory', weapon1:'Primary', weapon2:'Secondary', grenade:'Grenade', heal:'Use Med', drone:'Deploy Drone', firemode:'Fire Mode' };
+  inventory:'Inventory', weapon1:'Primary', weapon2:'Secondary', grenade:'Grenade', heal:'Use Med', drone:'Deploy Drone', firemode:'Fire Mode', melee:'Melee Strike' };
 
 // ----- raid stops: difficulty curve by stopIndex. -----
 DATA.stops = {
@@ -228,3 +238,95 @@ if(DATA.loot){
   if(DATA.loot.cont_locker)  DATA.loot.cont_locker.push({id:'clo_fatigues',w:2},{id:'clo_jacket',w:1});
 }
 // =====================================================================
+// ===========================================================================
+// GUNSMITH DEPTH — full attachment slot set + melee  (NEW SECTION)
+// ---------------------------------------------------------------------------
+// Self-contained block: extra attachment ITEM defs + their stat-effect defs +
+// the melee config. Kept in its own labeled section so parallel edits to the
+// tables above auto-merge. The four originals (red dot / scope / suppressor /
+// grip) stay in DATA.items / DATA.attachments above; everything here is new.
+//
+// Slot taxonomy (a weapon's `slots` array gates which a gun accepts):
+//   optic     scope / red-dot / holo — zoom + ADS speed + precision
+//   muzzle    suppressor / comp / brake — recoil + sound + spread
+//   foregrip  vert / angled grip — recoil + handling
+//   stock     buttstock — recoil + ADS speed + mobility
+//   laser     hipfire accuracy (+ a visible dot in-world)
+//   magazine  capacity + reload
+//   barrel    range + velocity (+ a touch of recoil/handling tradeoff)
+//
+// Effective-stat scalars introduced here (1.0 = baseline, defaulted in
+// Weapons.stats): handling (viewmodel/ADS feel), mobility (move while aimed),
+// hipAccuracy (hipfire spread tightening). `add` = additive, `mods` = mult.
+// ===========================================================================
+
+// ---- new attachment ITEM defs (footprint / value / rarity / slot) ----
+DATA.gunsmithItems = {
+  // OPTIC
+  att_holo:{name:'Holo Sight', type:'attachment', slot:'optic', size:[2,1], value:480, rarity:2},
+  // MUZZLE
+  att_comp:{name:'Compensator', type:'attachment', slot:'muzzle', size:[1,1], value:260, rarity:2},
+  att_brake:{name:'Muzzle Brake', type:'attachment', slot:'muzzle', size:[1,1], value:300, rarity:2},
+  // FOREGRIP
+  att_anglegrip:{name:'Angled Grip', type:'attachment', slot:'foregrip', size:[1,1], value:180, rarity:2},
+  // STOCK / BUTTSTOCK
+  att_stock_tac:{name:'Tactical Stock', type:'attachment', slot:'stock', size:[2,1], value:340, rarity:2},
+  att_stock_light:{name:'Skeleton Stock', type:'attachment', slot:'stock', size:[2,1], value:380, rarity:3},
+  // LASER
+  att_laser:{name:'Laser Sight', type:'attachment', slot:'laser', size:[1,1], value:280, rarity:2},
+  // MAGAZINE
+  att_mag_ext:{name:'Extended Mag', type:'attachment', slot:'magazine', size:[1,2], value:320, rarity:2},
+  att_mag_quick:{name:'Quickdraw Mag', type:'attachment', slot:'magazine', size:[1,2], value:300, rarity:2},
+  // BARREL
+  att_barrel_long:{name:'Long Barrel', type:'attachment', slot:'barrel', size:[2,1], value:420, rarity:3},
+  att_barrel_short:{name:'Short Barrel', type:'attachment', slot:'barrel', size:[1,1], value:240, rarity:2},
+};
+for(const k in DATA.gunsmithItems){ DATA.gunsmithItems[k].id=k; DATA.items[k]=DATA.gunsmithItems[k]; }
+
+// ---- new attachment EFFECT defs (mods=multiplicative, add=additive) ----
+DATA.gunsmithAttachments = {
+  // OPTIC — holo: fast, mild zoom, tightens ADS spread
+  att_holo:{slot:'optic', mods:{adsSpread:0.6, adsTime:1.0}, zoom:1.4},
+  // MUZZLE — comp kills vertical recoil; brake trades sound for spread control
+  att_comp:{slot:'muzzle', mods:{recoil:0.62, spread:0.92}},
+  att_brake:{slot:'muzzle', mods:{recoil:0.55, adsSpread:1.06}},
+  // FOREGRIP — angled: faster handling/ADS, less recoil control than vert
+  att_anglegrip:{slot:'foregrip', mods:{recoil:0.9, adsTime:0.9}, add:{handling:0.15}},
+  // STOCK — tac: recoil + ADS, slight mobility cost; light: mobility + ADS, less recoil help
+  att_stock_tac:{slot:'stock', mods:{recoil:0.82, adsTime:0.85}, add:{mobility:-0.05, handling:0.08}},
+  att_stock_light:{slot:'stock', mods:{recoil:0.94, adsTime:0.9}, add:{mobility:0.12, handling:0.12}},
+  // LASER — big hipfire-accuracy boost (+ visible dot), tiny ADS-time cost
+  att_laser:{slot:'laser', mods:{spread:0.8}, add:{hipAccuracy:0.45}, laser:true},
+  // MAGAZINE — ext: +capacity, slower reload; quick: faster reload, no capacity
+  att_mag_ext:{slot:'magazine', add:{mag:15}, mods:{reload:1.18}},
+  att_mag_quick:{slot:'magazine', mods:{reload:0.78}},
+  // BARREL — long: +range/velocity, slower ADS; short: faster handling, less range
+  att_barrel_long:{slot:'barrel', mods:{range:1.25, velocity:1.2, eff:1.2, adsTime:1.12}, add:{handling:-0.06}},
+  att_barrel_short:{slot:'barrel', mods:{range:0.85, velocity:0.85, eff:0.85, adsTime:0.92}, add:{handling:0.1, mobility:0.05}},
+};
+for(const k in DATA.gunsmithAttachments){ DATA.gunsmithAttachments[k].id=k; DATA.attachments[k]=DATA.gunsmithAttachments[k]; }
+
+// ---- MELEE: quick strike usable with ANY weapon equipped (bind 'melee', def V) ----
+// Short-range punch/bash. Costs stamina, has a cooldown, headshot multiplier.
+// Consumed by Weapons.melee(); no logic here, just the numbers to tune.
+DATA.melee = {
+  damage:55,        // base hit damage
+  headMult:2.0,     // headshot multiplier
+  range:2.6,        // reach in metres (raycast far)
+  cooldown:0.65,    // seconds between strikes
+  stamina:18,       // stamina drained per swing
+  minStamina:8,     // need at least this much stamina to swing
+  noise:'sprint',   // Perception/DATA.noise key for the swing whoosh
+};
+
+// register the new attachment items into the gunsmith-relevant loot/vendor pools
+// (appended, not rewritten, so the tables above merge cleanly)
+DATA.loot.crate_rare.push({id:'att_holo',w:3},{id:'att_comp',w:3},{id:'att_laser',w:2},{id:'att_mag_ext',w:2},{id:'att_stock_tac',w:2},{id:'att_barrel_long',w:1});
+DATA.loot.cont_weapon.push({id:'att_anglegrip',w:4},{id:'att_comp',w:3},{id:'att_laser',w:3},{id:'att_mag_ext',w:3},{id:'att_stock_light',w:2},{id:'att_barrel_short',w:2});
+DATA.vendor.push('att_holo','att_comp','att_anglegrip','att_stock_tac','att_laser','att_mag_ext','att_barrel_short');
+
+// icons for the new parts (emoji stand-ins, matches DATA.iconId style)
+Object.assign(DATA.iconId, {
+  att_holo:'🟢', att_comp:'🧱', att_brake:'🔥', att_anglegrip:'📐', att_stock_tac:'🪵',
+  att_stock_light:'🦴', att_laser:'🔆', att_mag_ext:'🔋', att_mag_quick:'⚡', att_barrel_long:'📏', att_barrel_short:'➖',
+});
