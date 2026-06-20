@@ -14,5 +14,17 @@ export const Audio = (function(){
     try{ const o=c.createOscillator(), g=c.createGain(); o.type=d[2]; o.frequency.value=d[0];
       o.connect(g); g.connect(c.destination); const t=c.currentTime;
       g.gain.setValueAtTime(d[3],t); g.gain.exponentialRampToValueAtTime(0.0001,t+d[1]); o.start(t); o.stop(t+d[1]); }catch(e){} }
-  return { play, resume };
+
+  // ----- squad voice callouts: terse two-tone "radio chirps" so each key event
+  // reads distinctly (rising = alert/contact, falling = grenade, flat = reloading).
+  // name -> [f0, f1, seconds, waveform, gain] (frequency glides f0 -> f1).
+  const calls={ contact:[420,760,.16,'square',.12], reloading:[300,300,.12,'triangle',.09],
+                grenade:[680,300,.20,'sawtooth',.13], flank:[500,620,.12,'triangle',.08] };
+  function callout(name){ if(!ok) return; const c=ac(); if(!c) return; const d=calls[name]; if(!d) return;
+    try{ const o=c.createOscillator(), g=c.createGain(); o.type=d[3]; const t=c.currentTime;
+      o.frequency.setValueAtTime(d[0],t); o.frequency.exponentialRampToValueAtTime(Math.max(1,d[1]),t+d[2]*0.9);
+      o.connect(g); g.connect(c.destination);
+      g.gain.setValueAtTime(d[4],t); g.gain.exponentialRampToValueAtTime(0.0001,t+d[2]); o.start(t); o.stop(t+d[2]); }catch(e){} }
+
+  return { play, callout, resume };
 })();
