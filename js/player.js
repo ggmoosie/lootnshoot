@@ -18,6 +18,22 @@ import { Raid } from "./raid.js";
 export const Player = (function(){
   const RADIUS=0.45, HEIGHT=1.7, BASE=6.2, SPRINT=1.6, JUMP=4.6, GRAV=15;
   let vig=0, stepT=0, velY=0, jumpY=0, grounded=true, movingFlag=false, eyeCur=HEIGHT;
+  // ---- head bob (feat/movement-feel) ---------------------------------------
+  // Subtle walk/run camera bob, composited through GFX.setBob (the same render-time
+  // additive weapons.js uses) so it honors the head-bob settings toggle + reduced-
+  // motion, never accumulates into the rig, and never throws off ADS alignment.
+  // weapons.js ALSO drives setBob while a gun viewmodel is active in a RAID and runs
+  // AFTER Player.update, so it wins there (its bob is the same walk/run feel); this
+  // fills the gaps weapons.js leaves — the HUB safehouse and any moment with no gun —
+  // so you always get head bob while moving. bobT is the cadence clock.
+  let bobT=0, bobX=0, bobY=0;
+  // ---- wall-climb / mantle-up (feat/movement-feel) -------------------------
+  // Distinct from vaultProbe (which only handles obstacles up to ~2.9 you can clear
+  // or stand on): a dedicated "run at a wall + look straight UP → climb it" mantle.
+  // wallLatch makes one approach = one climb attempt (no per-frame re-trigger).
+  let wallLatch=false;
+  const CLIMB_MAX=4.2;          // a wall whose top is at/below this can be climbed up
+  const LOOK_UP_MIN=1.0;        // pitch (rad) above this counts as "looking ~fully up"
   // ---- traversal: vault / mantle (proper FPS clamber) ----------------------
   // World.vaultProbe classifies the obstacle ahead and returns ONE of three
   // moves; player.js then carries the body along a believable, COLLISION-CHECKED
@@ -44,8 +60,55 @@ export const Player = (function(){
     vault={ t:0, dur:plan.dur||0.45, type:plan.type,
             sx:p.x, sz:p.z, lipx:plan.lip.x, lipz:plan.lip.z, lx:plan.land.x, lz:plan.land.z,
             cx:p.x, cz:p.z, cy:startY,            // last KNOWN-CLEAR position on the path
-            startY, peakY, landY:plan.landY||0 };
+            startY, peakY, landY:plan.landY||0, blocked:false };
     Audio.play('ui');
+  }
+  // ---- WALL-CLIMB probe (run into a wall + look straight up → mantle up) -----
+  // vaultProbe ignores anything taller than ~2.9 (you can't surmount it normally).
+  // This is the deliberate, input-gated exception: heading INTO a wall while looking
+  // ~straight up, climb UP it. We march forward to find the first solid face ahead,
+  // read its TOP from the standable height just past that face, and — if the top is
+  // within CLIMB_MAX and the surface up there is clear to stand on — synthesize a
+  // mantle-up plan and hand it to startVault (so the existing collision-checked,
+  // height-aware tickVault carries the body up; no separate climb code path). Returns
+  // a plan or null. Pure read of World helpers; never mutates world state.
+  function wallClimbProbe(pos, fwd){
+    const fl=Math.hypot(fwd.x,fwd.z)||1e-4, nx=fwd.x/fl, nz=fwd.z/fl;
+    // find the nearest blocking face ahead (fine march out to ~1.1u).
+    let hitT=-1;
+    for(let reach=0.3; reach<=1.1; reach+=0.1){
+      if(!World.spotClear(pos.x+nx*reach, pos.z+nz*reach, RADIUS*0.85)){ hitT=reach; break; }
+    }
+    if(hitT<0) return null;                                   // nothing to climb
+    // the standable TOP of the wall = the first positive ground height as we march
+    // PAST the blocking face (spotClear trips a body-radius BEFORE the face, so a
+    // fixed offset can land short of the AABB — scan until groundTopAt goes positive).
+    let top=0;
+    for(let t=hitT; t<=hitT+0.8; t+=0.1){
+      const g=World.groundTopAt(pos.x+nx*t, pos.z+nz*t);
+      if(g>0){ top=g; break; }
+    }
+    if(top<=groundY+0.4) return null;                         // not a real wall (a step / nothing)
+    if(top>groundY+CLIMB_MAX) return null;                    // out of climb reach
+    // LANDING: stand ON TOP of the wall. We scan forward from just past the face for
+    // a foot point whose ground height is the wall top (you're ON it) and where no
+    // OTHER collider rises above that top. The landing sits INSIDE the wall's own
+    // footprint, so a ground-level spotClear would always fail (it overlaps the wall
+    // we're climbing) — hence the HEIGHT-AWARE test (same idea as tickVault): clear
+    // means "nothing taller than the wall top is here." Prefer a spot ~a body-radius
+    // in from the lip so we settle inboard, not teetering on the edge.
+    let land=null;
+    for(let t=hitT+0.15; t<=hitT+1.4; t+=0.15){
+      const lx=pos.x+nx*t, lz=pos.z+nz*t;
+      const g=World.groundTopAt(lx,lz);
+      if(Math.abs(g-top)<0.3){ land={x:lx,z:lz}; if(t>=hitT+RADIUS+0.3) break; }   // on the top; keep going a bit for an inboard spot
+      else if(g>top+0.3) break;          // something TALLER ahead (a second storey) → stop
+      else if(land) break;               // ran off the far edge after finding top → settle on last good
+    }
+    if(!land) return null;                                   // no standable top found → can't climb
+    const lip={ x:pos.x+nx*(hitT+0.05), z:pos.z+nz*(hitT+0.05) };
+    // a touch slower than a normal mantle — it's a taller climb.
+    return { type:'mantleUp', land, landY:top, top, rise:top-groundY, lip, dur:0.75 };
   }
   // sample the planned path at parameter k∈[0,1]: a 2-segment lerp start→lip→land
   // for XZ, with Y rising to peakY at the lip then easing to landY.
@@ -66,13 +129,29 @@ export const Player = (function(){
     const ease=k<0.5 ? 2*k*k : 1-Math.pow(-2*k+2,2)/2;            // easeInOutQuad over the whole move
     const s=vaultSample(ease);
     const p=GFX.yaw.position;
-    // CLAMP XZ: only advance if the next point is clear. The body is ABOVE the
-    // obstacle's top for the airborne middle of the move (eye/feet arc over the
-    // lip), so probe with a SMALL radius there — we glide over the vaulted ledge
-    // but still STOP dead at any real (taller) wall we'd otherwise clip through.
-    const overLip = s.y > vault.peakY-0.25;       // near the top of the arc → forgiving probe
-    const probeR = overLip ? RADIUS*0.3 : RADIUS*0.8;
-    if(World.spotClear(s.x,s.z,probeR)){ vault.cx=s.x; vault.cz=s.z; vault.cy=s.y; }
+    // CLAMP XZ — HEIGHT-AWARE. The OLD test re-probed every collider at the next
+    // point, but the planned path runs OVER (vault) or ONTO (mantle) the very
+    // obstacle we're surmounting — whose footprint the lip/landing sit inside — so
+    // a plain spotClear always failed there, froze the body at the near face, and
+    // the settle push then SHOVED YOU BACK (the "vault just pushes you back" bug).
+    // Fix: a point is clear to move into if our FEET (s.y) are at/above whatever
+    // stands there — i.e. we only stop for something TALLER than our current feet.
+    // groundTopAt(x,z) = tallest collider top under (x,z); if feet clear it (with a
+    // little slack) we glide over/onto it. We still STOP dead at a real taller wall
+    // (its top > our feet), so we never clip through a building. A thin spotClear at
+    // foot level is kept ONLY for the start of the rise (feet still near ground), to
+    // catch a wall hugging the obstacle before we've lifted over the lip.
+    const obstTop = World.groundTopAt ? World.groundTopAt(s.x,s.z) : 0;
+    const feetClearHere = s.y >= obstTop - 0.25;                 // feet at/above what's here
+    const lowRise = s.y < 0.35;                                  // still basically on the ground
+    const groundGuard = !lowRise || World.spotClear(s.x,s.z,RADIUS*0.5);
+    // CONTIGUITY: a real vault/mantle plan is always a clear corridor (world.js
+    // marchLanding proves it), so the only way a sample fails is a freak case where
+    // something TALLER than the body sits on the path. If that ever happens, latch
+    // `blocked` and stop advancing for the rest of the move — never let a later
+    // far-side sample (clear again past the wall) teleport the body THROUGH it.
+    if(!(feetClearHere && groundGuard)) vault.blocked=true;
+    else if(!vault.blocked){ vault.cx=s.x; vault.cz=s.z; vault.cy=s.y; }
     p.x=vault.cx; p.z=vault.cz;
     // feet at cy → eye at cy+HEIGHT; keep the smoothed eye in sync for after.
     GFX.yaw.position.y=vault.cy+HEIGHT;
@@ -95,7 +174,7 @@ export const Player = (function(){
       vault=null;
     }
   }
-  function spawn(x,z,faceY){ vault=null; groundY=World.groundTopAt?World.groundTopAt(x,z):0; groundCur=groundY; jumpY=0; velY=0; grounded=true; GFX.yaw.position.set(x,groundY+HEIGHT,z); GFX.yaw.rotation.y=faceY||0; GFX.pitch.rotation.x=0; }
+  function spawn(x,z,faceY){ vault=null; jumpLatch=false; wallLatch=false; bobT=0; bobX=0; bobY=0; groundY=World.groundTopAt?World.groundTopAt(x,z):0; groundCur=groundY; jumpY=0; velY=0; grounded=true; GFX.yaw.position.set(x,groundY+HEIGHT,z); GFX.yaw.rotation.y=faceY||0; GFX.pitch.rotation.x=0; }
   function heal(n){ S.player.health=Math.min(S.player.maxHealth, S.player.health+n); Events.emit('player:changed'); }
 
   // ---- simplified healing + buff consumables (added: feat/lns-throwables-healing)
@@ -171,6 +250,19 @@ export const Player = (function(){
       // else: a tall face ahead — handled by the vault probe / collision, not a step
       if(floor<groundY-0.05){ grounded=false; }                  // stepped off an edge → fall
     }
+    // ---- WALL-CLIMB: run INTO a wall while looking ~straight UP → mantle up ----
+    // A deliberate, input-gated traversal (NOT auto): you must be pushing FORWARD
+    // into a face AND have the camera pitched near full-up. wallLatch = one approach,
+    // one attempt; it clears the moment you stop looking up or stop pushing forward,
+    // so you can line up and try again. Pitch sign: +x = up (clamped to ~+1.5).
+    const lookingUp = GFX.pitch.rotation.x >= LOOK_UP_MIN;
+    const pushingFwd = f < -0.3;                                  // forward held / stick pushed forward
+    if(grounded && !crouch && lookingUp && pushingFwd && !wallLatch && (S.mode===MODE.RAID||S.mode===MODE.HUB)){
+      wallLatch=true;
+      const plan=wallClimbProbe(GFX.yaw.position, fwdV);
+      if(plan){ startVault(plan); Events.emit('player:tick'); return; }   // climb this frame
+    }
+    if(!(lookingUp && pushingFwd)) wallLatch=false;              // released → re-arm
     // jump + gravity (vertical only; XZ collision is 2D). The jump key is context-
     // sensitive: pressed while moving INTO a surmountable obstacle it VAULTS/CLIMBS
     // instead of a plain hop. jumpLatch makes one press = one action.
@@ -200,6 +292,20 @@ export const Player = (function(){
     // airborne) is driven by jumpY going negative, so groundCur just follows down.
     groundCur += (groundY-groundCur)*Math.min(1,dt*14);
     GFX.yaw.position.y = groundCur + eyeCur + jumpY;
+    // ---- HEAD BOB ----  subtle walk/run camera bob, composited via GFX.setBob (so
+    // the head-bob toggle + reduced-motion are honored and the rig stays clean). The
+    // cadence clock runs faster while moving (and a touch harder when sprinting); the
+    // amount eases to 0 at rest and while airborne. ADS damps it hard so aiming holds.
+    // Same shape/amplitude as the weapons.js gun bob so the feel is seamless when
+    // weapons.js (which runs after us, with a gun up in a RAID) takes the wheel —
+    // this owns the gap (HUB safehouse + any no-gun moment) so bob is ALWAYS present.
+    bobT += dt*(moving?9:3);
+    const bobOn = moving && grounded;
+    const bobAmp = bobOn ? (sprint?1.15:1) : 0;
+    const bobDamp = S.player.ads ? 0.25 : 1;
+    bobX += (Math.sin(bobT*0.5)*0.012*bobAmp - bobX)*Math.min(1,dt*8);
+    bobY += (Math.abs(Math.sin(bobT))*0.018*bobAmp - bobY)*Math.min(1,dt*8);
+    try{ if(GFX.setBob) GFX.setBob(bobX*bobDamp, bobY*bobDamp); }catch(_){ }
     // footstep noise + faint sound (stealth: crouch near-silent, sprint loud)
     if(moving && grounded && S.mode===MODE.RAID){ stepT-=dt; if(stepT<=0){ stepT=crouch?0.55:sprint?0.28:0.42; Perception.footstep(GFX.yaw.position, sprint, crouch); if(!crouch) Audio.play('step'); } }
     // stamina (buff hook: Status.staminaMult boosts recovery, e.g. Focus Shot)
@@ -213,6 +319,6 @@ export const Player = (function(){
     if(vig>0){ vig-=dt; if(vig<=0) document.getElementById('vig').style.opacity='0'; }
     Events.emit('player:tick');
   }
-  function resetForRaid(){ S.player.health=S.player.maxHealth; S.player.stamina=S.player.maxStamina; Status.clearAll(); Input.crouch=false; vault=null; groundY=0; groundCur=0; jumpY=0; velY=0; grounded=true; }
+  function resetForRaid(){ S.player.health=S.player.maxHealth; S.player.stamina=S.player.maxStamina; Status.clearAll(); Input.crouch=false; vault=null; jumpLatch=false; wallLatch=false; bobT=0; bobX=0; bobY=0; groundY=0; groundCur=0; jumpY=0; velY=0; grounded=true; }
   return { spawn, heal, useMed, damage, update, resetForRaid, isMoving:()=>movingFlag, inVault, RADIUS, HEIGHT };
 })();
