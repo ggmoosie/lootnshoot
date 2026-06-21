@@ -25,12 +25,51 @@ export const World = (function(){
   let extractPos=null, extractMesh=null, extractHold=0;
   let hostage=null, bomb=null;   // objective actors (rescue NPC / defuse device)
 
-  function reset(){ GFX.clearWorld(); colliders=[]; solids=[]; interactables=[]; doors=[]; mapBoxes=[]; extractPos=null; extractMesh=null; extractHold=0; hostage=null; bomb=null; Enemies.clear(); Loot.clear(); Projectiles.clear(); Harvest.clear(); Allies.clear(); FX.clear(); }
+  // ---- SHARED RESOURCE CACHES (draw-call / GPU budget) ---------------------
+  // A raid arena is MANY buildings. Each building is now built from dozens of
+  // mesh pieces (walls, plinth, cornice, window frames, glass, roof, trim), so
+  // a naive `new Material` per piece would balloon the material count and per-
+  // shot bullet raycasts (weapons/AI ray against World.solids). We cache one
+  // MeshStandardMaterial per (color,rough,metal,emissive,opacity) tuple and one
+  // BoxGeometry per (w,h,d) tuple, so the whole arena collapses onto a tiny
+  // palette of shared materials + reused geometries. Cleared each reset() so a
+  // new stop's seeded palette doesn't leak the previous one.
+  let matCache=new Map(), geoCache=new Map();
+  function sharedMat(color,opt={}){
+    const rough=opt.rough??.9, metal=opt.metal??.05, emi=opt.emissive??0, ei=opt.emissiveIntensity??0, op=opt.opacity??1;
+    const key=`${color}|${rough}|${metal}|${emi}|${ei}|${op}`;
+    let m=matCache.get(key);
+    if(!m){ m=new T.MeshStandardMaterial({color,roughness:rough,metalness:metal,
+              emissive:emi||0x000000, emissiveIntensity:ei,
+              transparent:op<1, opacity:op}); matCache.set(key,m); }
+    return m;
+  }
+  function sharedBox(w,h,d){
+    // round to 1cm so the hundreds of fixed-size decorative pieces (trim bands,
+    // window panes, parapet lips) collapse onto one shared geometry each, while
+    // structural wall meshes stay within 1cm of their (exact) colliders — far
+    // below anything the eye can read as a seam.
+    const r=v=>Math.round(v*100)/100;
+    const key=`${r(w)}|${r(h)}|${r(d)}`;
+    let g=geoCache.get(key);
+    if(!g){ g=new T.BoxGeometry(r(w),r(h),r(d)); geoCache.set(key,g); }
+    return g;
+  }
+
+  function reset(){ GFX.clearWorld(); colliders=[]; solids=[]; interactables=[]; doors=[]; mapBoxes=[]; extractPos=null; extractMesh=null; extractHold=0; hostage=null; bomb=null; matCache=new Map(); geoCache=new Map(); Enemies.clear(); Loot.clear(); Projectiles.clear(); Harvest.clear(); Allies.clear(); FX.clear(); }
   function addBox(x,z,w,d,h,color,opt={}){
-    const m=new T.Mesh(new T.BoxGeometry(w,h,d), new T.MeshStandardMaterial({color,roughness:opt.rough??.9,metalness:opt.metal??.05}));
+    // Geometry + material are SHARED via the caches above unless the caller needs
+    // to mutate this mesh's material later (opt.uniqueMat → fresh material, e.g.
+    // crates that toggle their own emissive). Behaviour for colliders/solids/
+    // mapBoxes is byte-for-byte the same as before so movement/AI/minimap/vault
+    // are untouched — only the meshes are now pooled.
+    const mat = opt.uniqueMat
+      ? new T.MeshStandardMaterial({color,roughness:opt.rough??.9,metalness:opt.metal??.05})
+      : sharedMat(color,opt);
+    const m=new T.Mesh(sharedBox(w,h,d), mat);
     // baseY lets a prop sit ON the terrain heightfield instead of the y=0 plane;
     // colliders stay 2D (XZ) so this is purely visual seating.
-    const by=opt.baseY||0; m.position.set(x,by+h/2,z); m.castShadow=true; m.receiveShadow=true; GFX.world.add(m);
+    const by=opt.baseY||0; m.position.set(x,by+h/2,z); m.castShadow=opt.cast!==false; m.receiveShadow=true; GFX.world.add(m);
     // `top` (obstacle top Y) lets the vault/climb system tell a low, hoppable
     // obstacle (cover, fences, low ledges) from an un-vaultable wall — colliders
     // are still 2D for movement; this is read-only metadata.
@@ -214,6 +253,57 @@ export const World = (function(){
     }
   }
 
+  // ---- BUILDING DETAIL HELPERS --------------------------------------------
+  // Everything below is PURELY VISUAL: it draws into the world but never touches
+  // colliders, solids, mapBoxes, doors or interactables. So the gameplay model
+  // (2D-AABB collision, AI cover/LOS off World.solids, vault metadata, minimap
+  // footprints, loot/spawn placement) is byte-for-byte identical to the plain-box
+  // building — we just dress the existing shell so it reads as a building. All
+  // meshes go through addBox with {collide:false, solid:false} (so they add zero
+  // raycast cost) and share the material/geometry caches.
+  const deco={collide:false, solid:false};
+  // quantize a facade color onto a small seeded palette + derive a trim color, so
+  // dozens of buildings collapse onto a handful of shared materials (draw-call
+  // budget) instead of one unique material each (the old +rng()*0x0a0a0a did the
+  // opposite). Returns {wall, trim, glass}.
+  function buildingPalette(color){
+    // snap each channel to 5 levels → at most a few distinct wall colors per arena
+    const q=c=>Math.round(c/40)*40;
+    const r=q((color>>16)&255), g=q((color>>8)&255), b=q(color&255);
+    const wall=(Math.min(255,r)<<16)|(Math.min(255,g)<<8)|Math.min(255,b);
+    // trim = a touch lighter + cooler (concrete/steel banding)
+    const lt=v=>Math.min(255,Math.round(v*1.35)+14);
+    const trim=(lt(r)<<16)|(lt(g)<<8)|lt(b);
+    return { wall, trim, glass:0x10161c };
+  }
+  // a run of recessed windows along one outer wall face. `axis` = the wall's run
+  // ('x' wall faces ±Z; 'z' wall faces ±X). `face` = +1/-1 outward normal sign on
+  // the perpendicular axis. Windows are dark glass panes set just proud of the
+  // wall plane with thin frame posts — readable from outside, decorative only.
+  function addWindows(axis,center,len,fixed,h,face,pal,rng){
+    if(h<3.2 || len<3) return;
+    const sill=1.0, winH=Math.min(1.5, h-sill-0.9), winW=1.1, gapMin=1.1;
+    if(winH<0.6) return;
+    const usable=len-1.6;                                   // keep clear of corners
+    const pitch=winW+gapMin;
+    const n=Math.max(0, Math.floor(usable/pitch));
+    if(n<=0) return;
+    const span=(n-1)*pitch;
+    const proud=0.06;                                       // sit just outside the wall plane
+    for(let i=0;i<n;i++){
+      const off=-span/2 + i*pitch;
+      const gx = axis==='x' ? center+off : fixed + face*proud;
+      const gz = axis==='x' ? fixed + face*proud : center+off;
+      const gw_ = axis==='x' ? winW : 0.1, gd_ = axis==='x' ? 0.1 : winW;
+      // glass pane (dark, faintly emissive so it catches the eye like real glazing)
+      addBox(gx, gz, gw_, gd_, winH, pal.glass, {...deco, baseY:sill, rough:.25, metal:.4, emissive:0x0a141c, emissiveIntensity:.12, cast:false});
+      // frame: a thin trim border (top+bottom lintel/sill) around the pane
+      const fy0=sill-0.12, fyH=winH+0.24;
+      addBox(gx, gz, (axis==='x'?winW+0.24:0.14), (axis==='x'?0.14:winW+0.24), 0.12, pal.trim, {...deco, baseY:fy0, cast:false});
+      addBox(gx, gz, (axis==='x'?winW+0.24:0.14), (axis==='x'?0.14:winW+0.24), 0.12, pal.trim, {...deco, baseY:fy0+fyH, cast:false});
+    }
+  }
+
   // Building: outer shell (4 walls + a doorway + swinging door) PARTITIONED
   // into 2–4 rooms by internal walls, each with a doorway gap. Loot + cover are
   // distributed per-room. Larger footprints get a second floor: a raised slab
@@ -221,14 +311,23 @@ export const World = (function(){
   // built from addBox/addDoor so the colliders/solids/doors model is unchanged —
   // AI + player collision keep working with zero new concepts.
   //
+  // DRESSING (feat/building-geo): on top of that exact structural shell we add a
+  // foundation plinth, a top cornice + roof slab + parapet, recessed windows on
+  // the solid walls, and an entry lintel/stoop — ALL purely visual (deco: no
+  // colliders/solids), so silhouettes + detail improve while collision, AI,
+  // vaulting, loot, spawns and the minimap stay identical.
+  //
   // `facing` picks WHICH wall carries the entrance ('S' -Z [default], 'N' +Z,
   // 'W' -X, 'E' +X) so callers can aim the door at a road / yard gate and never
   // leave a building sealed behind a fence. The other three walls stay solid.
   // ROBUSTNESS: a building ALWAYS gets exactly one outer doorway + door, and the
   // door is reachable because its wall faces open ground by construction.
   function addBuilding(cx,cz,w,d,h,rng,wallColor,facing){
-    const t=0.4, gw=2.6, col=wallColor||0x3a414a;
+    const t=0.4, gw=2.6, pal=buildingPalette(wallColor||0x3a414a), col=pal.wall;
     facing=facing||'S';
+    // ---- foundation plinth: a short, slightly oversized base slab so the
+    // building sits planted on the ground with a baseboard band (visual only).
+    addBox(cx, cz, w+0.5, d+0.5, 0.45, pal.trim, {...deco, baseY:0, rough:.95});
     // four walls: the entrance wall gets a gap+door, the rest are solid panels.
     // S/N run along X at fixed z; W/E run along Z at fixed x.
     if(facing==='S'){ wallWithGap('x',cx,w,cz-d/2,h,col,0,gw); addDoor(cx-1,cz-d/2,'x'); }
@@ -239,6 +338,52 @@ export const World = (function(){
     else            { addBox(cx-w/2, cz, t, d, h, col); }                  // left (-X)
     if(facing==='E'){ wallWithGap('z',cz,d,cx+w/2,h,col,0,gw); addDoor(cx+w/2,cz-1,'z'); }
     else            { addBox(cx+w/2, cz, t, d, h, col); }                  // right (+X)
+
+    // ---- windows on the SOLID outer walls (skip the entrance wall) ----------
+    // drawn just outside each wall's plane; never on the doorway wall so the
+    // entrance reads clean. Decorative — the wall collider is unchanged.
+    if(facing!=='S') addWindows('x', cx, w, cz-d/2, h, -1, pal, rng);
+    if(facing!=='N') addWindows('x', cx, w, cz+d/2, h, +1, pal, rng);
+    if(facing!=='W') addWindows('z', cz, d, cx-w/2, h, -1, pal, rng);
+    if(facing!=='E') addWindows('z', cz, d, cx+w/2, h, +1, pal, rng);
+
+    // ---- top cornice + flat roof + parapet ---------------------------------
+    // a thin overhanging band at the wall top, a roof slab covering the plan, and
+    // a low parapet lip around the edge → a real roofline instead of open boxes.
+    // The roof SLAB is the only added solid (so you can't shoot in from straight
+    // above); it's 0.25 tall so AI cover (needs >COVER_H) never picks it up.
+    addBox(cx, cz, w+0.4, d+0.4, 0.18, pal.trim, {...deco, baseY:h-0.18, cast:false}); // cornice
+    addBox(cx, cz, w, d, 0.25, pal.wall, {collide:false, baseY:h, rough:.95});          // roof slab (solid for LOS)
+    // parapet lip (4 thin runs around the roof edge) — visual
+    addBox(cx, cz-d/2, w, 0.18, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
+    addBox(cx, cz+d/2, w, 0.18, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
+    addBox(cx-w/2, cz, 0.18, d, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
+    addBox(cx+w/2, cz, 0.18, d, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
+    // a little rooftop kit (vent/AC box) on bigger roofs for silhouette interest
+    if(w>=9 && d>=9 && rng()<0.7){
+      const rx=cx+(rng()-.5)*(w-3), rz=cz+(rng()-.5)*(d-3);
+      addBox(rx, rz, 1.4, 1.0, 0.8, pal.trim, {collide:false, solid:false, baseY:h+0.25, rough:.7, metal:.3});
+    }
+
+    // ---- entry detail: a lintel band + awning over the door + a stoop slab ---
+    // placed on the entrance wall; purely visual cue that says "way in".
+    {
+      const ez = facing==='S' ? cz-d/2 : facing==='N' ? cz+d/2 : cz;
+      const exx= facing==='W' ? cx-w/2 : facing==='E' ? cx+w/2 : cx;
+      const eFace = facing==='S'?-1 : facing==='N'?+1 : facing==='W'?-1 : +1;
+      const horiz = facing==='S'||facing==='N';            // entrance wall runs along X?
+      const lintY = Math.min(h-0.4, 3.0);
+      // lintel above the doorway (the door gap is centred at the wall centre)
+      if(horiz) addBox(cx-1, ez, gw+0.6, 0.18, 0.4, pal.trim, {...deco, baseY:lintY, cast:false});
+      else      addBox(exx, cz-1, 0.18, gw+0.6, 0.4, pal.trim, {...deco, baseY:lintY, cast:false});
+      // shallow awning ledge just proud of the wall over the door
+      const aw=gw+1.0;
+      if(horiz) addBox(cx-1, ez+eFace*0.5, aw, 1.0, 0.12, pal.trim, {...deco, baseY:lintY-0.05, cast:false});
+      else      addBox(exx+eFace*0.5, cz-1, 1.0, aw, 0.12, pal.trim, {...deco, baseY:lintY-0.05, cast:false});
+      // a flat stoop/step on the ground at the threshold
+      if(horiz) addBox(cx-1, ez+eFace*0.8, gw+0.4, 1.2, 0.14, pal.trim, {...deco, baseY:0, cast:false});
+      else      addBox(exx+eFace*0.8, cz-1, 1.2, gw+0.4, 0.14, pal.trim, {...deco, baseY:0, cast:false});
+    }
 
     // ---- partition interior into rooms -------------------------------------
     // rooms come from internal walls running across the SHORT axis (so each
@@ -502,7 +647,7 @@ export const World = (function(){
     if(!Input.locked && !Input.isTouch) GFX.dom.requestPointerLock();
   }
   function crate(rng,rare){ let cx,cz,tr=0; do{cx=(rng()*2-1)*64;cz=(rng()*2-1)*64;tr++;}while(Math.hypot(cx,cz)<12&&tr<20);
-    const m=addBox(cx,cz,1.2,1.2,1.2, rare?0x4a3f5a:0x4a3f23, {});
+    const m=addBox(cx,cz,1.2,1.2,1.2, rare?0x4a3f5a:0x4a3f23, {uniqueMat:true});
     m.material.emissive=new T.Color(rare?0xc06fd8:0xe8a33d); m.material.emissiveIntensity=.15;
     const crateObj={pos:new T.Vector3(cx,1,cz),rare,mesh:m,opened:false};
     interactables.push({pos:crateObj.pos, radius:2.4, label:rare?'open rare cache':'open crate', crate:true, action:()=>{ if(crateObj.opened) return; crateObj.opened=true; m.material.emissiveIntensity=0; Loot.openCrate(crateObj); }}); }
