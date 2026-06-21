@@ -37,6 +37,7 @@ if(!THREE){
    ENGINE.LOOP — fixed update order -> render. Add a system = add one update() call.
    ████████████████████████████████████████████████████████████████████████████ */
 let last=performance.now();
+const _lp=new THREE.Vector3(), _lf=new THREE.Vector3();  // scratch: listener pos + forward (reused per frame)
 function loop(){
   requestAnimationFrame(loop);
   const now=performance.now(); let dt=Math.min((now-last)/1000,0.05); last=now; Clock.now+=dt;
@@ -53,6 +54,9 @@ function loop(){
   World.update(dt);
   FX.update(dt);
   Minimap.update(dt);
+  // keep the positional-audio listener glued to the camera so enemy SFX pan/attenuate
+  // by where the player is actually looking (feat/audio-minimap). Cheap; runs every frame.
+  Audio.setListener(GFX.camera.getWorldPosition(_lp), GFX.camera.getWorldDirection(_lf));
   GFX.tickShake(dt);     // decay the camera-shake impulse before compositing in render()
   GFX.render();
 }
