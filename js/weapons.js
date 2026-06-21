@@ -580,9 +580,16 @@ export const Weapons = (function(){
   }
 
   function activeItem(){ return S.profile.equip[S.player.activeSlot]; }
-  // INFINITE AMMO (settings toggle): when on, firing never drains the mag and reloads
-  // are free + instant — no inventory rounds are consumed. Read live each shot.
-  function infiniteAmmo(){ return !!(S.profile && S.profile.settings && S.profile.settings.infiniteAmmo); }
+  // "COMBAT ACTIVE" = the weapon is live: a RAID, OR the safehouse SHOOTING RANGE
+  // (S.rangeActive). Everywhere update() used to gate on MODE.RAID for drawing/aiming/
+  // firing the gun now uses this, so test-firing on the range behaves like a raid for
+  // the weapon while S.mode stays MODE.HUB (no enemies/loot/extract). Single source of
+  // truth so the gun's visibility, fire path and reticle all agree.
+  function combatActive(){ return S.mode===MODE.RAID || S.rangeActive; }
+  // INFINITE AMMO: the settings toggle, OR the safehouse range (raid ammo is never
+  // spent test-firing). When on, firing never drains the mag and reloads are free +
+  // instant — no inventory rounds are consumed. Read live each shot.
+  function infiniteAmmo(){ return !!(S.rangeActive || (S.profile && S.profile.settings && S.profile.settings.infiniteAmmo)); }
   // computed stats with attachment effects + skill damage.
   // Attachment defs carry `mods` (multiplicative), `add` (additive), `zoom`
   // (sets outright), and flags (`quiet`, `laser`). New 1.0-baselined scalars —
@@ -933,7 +940,12 @@ export const Weapons = (function(){
           const dmg = perPelletDmg*(head?2.2:1)*fo*armorMult(e, head, at.pen);
           Enemies.damage(e, dmg); anyHit=true; if(head) anyHead=true; if(e.dead) anyKill=true;
           FX.impact(hits[0].point, 0xcc3322); }
-        else FX.impact(hits[0].point, 0xc8c0ac); }
+        else {
+          // SHOOTING RANGE target hit: a tagged range mesh in the hub reacts (score +
+          // popper flash/fall). World owns the reaction; this just routes the hit. The
+          // generic spark below still plays so the impact reads on any surface.
+          if(o.userData && o.userData.rangeTarget && World.rangeHit){ World.rangeHit(o, hits[0].point); anyHit=true; }
+          FX.impact(hits[0].point, 0xc8c0ac); } }
     }
     ray.far=Infinity;
     // SPARKY GLOWY muzzle flash at the real muzzle, thrown down the bore (suppressors
@@ -1021,15 +1033,17 @@ export const Weapons = (function(){
 
   function update(dt){
     refreshAttachments();
-    // SAFEZONE / out-of-field: NO held gun. The viewmodel only shows in a raid so the
-    // safehouse view is clear (no weapon blocking the screen while you gear up/trade).
-    if(gun) gun.visible = (S.mode===MODE.RAID);
-    if(S.mode!==MODE.RAID){ if(laserDot) laserDot.visible=false; if(laserBeam) laserBeam.visible=false; }
+    // SAFEZONE / out-of-field: NO held gun, so the safehouse view is clear while you
+    // gear up/trade. EXCEPTION: the SHOOTING RANGE (S.rangeActive) draws the gun in the
+    // hub so you can test-fire — combatActive() folds that case in.
+    const combat = combatActive();
+    if(gun) gun.visible = combat;
+    if(!combat){ if(laserDot) laserDot.visible=false; if(laserBeam) laserBeam.visible=false; }
     if(muzzle && muzzle.material.opacity>0) muzzle.material.opacity=Math.max(0,muzzle.material.opacity-dt*12);
     if(reloading && Clock.now>=reloadEnd) finishReload();
     // recoil recovery: spring the kicked aim back down
     if(recoilDebt>0.0001){ const rec=recoilDebt*Math.min(1,dt*7); GFX.pitch.rotation.x=clamp(GFX.pitch.rotation.x-rec,-1.5,1.5); recoilDebt-=rec; } else recoilDebt=0;
-    if(S.mode!==MODE.RAID){ prevFire=false; burstLeft=0; GFX.setBob(0,0); if(reticleEl) reticleEl.style.opacity='0'; if(scopeEl) scopeEl.style.opacity='0'; return; }
+    if(!combat){ prevFire=false; burstLeft=0; GFX.setBob(0,0); if(reticleEl) reticleEl.style.opacity='0'; if(scopeEl) scopeEl.style.opacity='0'; return; }
     // decay the equip / unequip / swap animation PLACEHOLDER timers
     if(drawAnim>0)    drawAnim    = Math.max(0, drawAnim    - dt*3.2);
     if(holsterAnim>0) holsterAnim = Math.max(0, holsterAnim - dt*3.6);
@@ -1119,7 +1133,7 @@ export const Weapons = (function(){
     // on). The beam runs muzzle→first-hit and stays lit every frame (not just on
     // fire). Beam + dot are reused meshes — only transform/opacity change here.
     if(laserDot){
-      const on = !!(st && st.laser) && laserOn && S.mode===MODE.RAID && !holstered;
+      const on = !!(st && st.laser) && laserOn && combat && !holstered;
       laserDot.visible = on; if(laserBeam) laserBeam.visible = on;
       if(on){
         // ORIGINATE AT THE LASER ATTACHMENT: read the laser emitter's WORLD position
