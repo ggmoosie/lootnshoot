@@ -119,6 +119,11 @@
   .bphd:hover{border-color:var(--amber);}
   .bpcard.filled .bphd{border-color:var(--amber-d);box-shadow:inset 0 -2px 0 var(--amber-d);}
   .bpcard.open .bphd{border-color:var(--amber);}
+  /* drag-attach feedback on the gunsmith slot cards (a mod dragged over its slot) */
+  .bpcard.drop-ok .bphd{border-color:var(--go);box-shadow:0 0 14px rgba(87,192,107,.5);}
+  .bpcard.drop-bad .bphd{border-color:var(--bad);box-shadow:0 0 10px rgba(216,69,62,.35);}
+  /* gunsmith drag/detach hint line under the header */
+  .bphint{font-family:var(--mono);font-size:10px;letter-spacing:.4px;color:var(--dim);margin:2px 0 0;}
   .bpic{font-size:19px;line-height:1;flex:none;}
   .bptxt{display:flex;flex-direction:column;line-height:1.05;flex:1;min-width:0;}
   .bpsl{font-family:var(--mono);font-size:8px;letter-spacing:1px;text-transform:uppercase;color:var(--dim);}
@@ -230,6 +235,17 @@
   .gi.r-1{box-shadow:inset 3px 0 0 var(--dim);}.gi.r-2{box-shadow:inset 3px 0 0 var(--go);}
   .gi.r-3{box-shadow:inset 3px 0 0 var(--blue);}.gi.r-4{box-shadow:inset 3px 0 0 var(--purp);}.gi.r-5{box-shadow:inset 3px 0 0 var(--amber);}
   #dragGhost{position:fixed;z-index:200;pointer-events:none;border:1px solid var(--amber);background:linear-gradient(155deg,rgba(60,68,76,.95),rgba(30,36,42,.95));opacity:.92;display:flex;align-items:center;justify-content:center;font-size:22px;box-shadow:0 6px 24px rgba(0,0,0,.6);}
+  /* procedural item icons (icons.js) — sized to fill whatever tile/slot hosts them.
+     The host elements (.ic/.ei/.shopic/.bpic/#dragGhost) keep their layout; the img
+     just fits inside. Always non-draggable so it never starts a native image drag. */
+  .itemicon{display:block;width:88%;height:88%;object-fit:contain;image-rendering:auto;pointer-events:none;user-select:none;-webkit-user-drag:none;}
+  .gi .ic .itemicon{width:84%;height:84%;}
+  .gi.small .ic .itemicon{width:90%;height:90%;}
+  .shopic .itemicon{width:54px;height:54px;margin:0 auto;}
+  .bpic .itemicon{width:22px;height:22px;}
+  .bpopt .bpic .itemicon{width:20px;height:20px;}
+  #dragGhost .itemicon{width:100%;height:100%;object-fit:contain;}
+  .eslot.wpn .ei .itemicon{width:34px;height:34px;}
   .gearcol{flex:0 0 auto;}
   /* crate staggered-reveal progress strip (loot screen) */
   .lootcolwrap{display:flex;flex-direction:column;}
