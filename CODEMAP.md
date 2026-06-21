@@ -42,6 +42,11 @@ Index of every top-level exported symbol in `js/*.js`, grouped by file.
 
 - `Harvest` (const) — js/harvest.js:12
 
+## js/icons.js
+
+- `iconHTML` (function) — js/icons.js:207 — HTML <img> for an item icon (drop-in replacement for the emoji string). `cls` is an optional extra class. The img is draggable=false so it never starts the browser's native image-drag and fight the pointer-based inventory drag.
+- `iconURLOf` (function) — js/icons.js:213 — raw url (for the drag-ghost / places that build their own element)
+
 ## js/input.js
 
 - `Input` (const) — js/input.js:16
@@ -127,7 +132,7 @@ _no top-level exports_
 
 ## js/ui.js
 
-- `UI` (const) — js/ui.js:28
+- `UI` (const) — js/ui.js:29
 
 ## js/util.js
 
