@@ -7,7 +7,7 @@ Index of every top-level exported symbol in `js/*.js`, grouped by file.
 
 ## js/account.js
 
-- `Account` (const) — js/account.js:120
+- `Account` (const) — js/account.js:128
 
 ## js/allies.js
 
@@ -116,7 +116,7 @@ _no top-level exports_
 
 ## js/save.js
 
-- `Save` (const) — js/save.js:9
+- `Save` (const) — js/save.js:26
 
 ## js/state.js
 
