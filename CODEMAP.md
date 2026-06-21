@@ -120,12 +120,12 @@ _no top-level exports_
 
 ## js/state.js
 
-- `Clock` (const) — js/state.js:37 — global frame clock — Clock.now is wall-time seconds, advanced by the main loop.
-- `EQUIP_SLOTS` (const) — js/state.js:34 — equipment slots (order = doll layout + serialization order) (clothing = soft wearable layer; part of the armor/clothing gear system)
+- `Clock` (const) — js/state.js:45 — global frame clock — Clock.now is wall-time seconds, advanced by the main loop.
+- `EQUIP_SLOTS` (const) — js/state.js:42 — equipment slots (order = doll layout + serialization order) (clothing = soft wearable layer; part of the armor/clothing gear system)
 - `Events` (const) — js/state.js:9
 - `MODE` (const) — js/state.js:23
 - `S` (const) — js/state.js:24
-- `uid` (const) — js/state.js:41
+- `uid` (const) — js/state.js:49
 
 ## js/status.js
 
