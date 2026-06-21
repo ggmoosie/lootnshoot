@@ -15,7 +15,7 @@ Index of every top-level exported symbol in `js/*.js`, grouped by file.
 
 ## js/audio.js
 
-- `Audio` (const) — js/audio.js:4 — audio.js — SYS: Audio. Thin WebAudio blip layer. Event-driven so real SFX can drop in later. No-ops safely where WebAudio is unavailable.
+- `Audio` (const) — js/audio.js:14 — audio.js — SYS: Audio. Thin WebAudio blip layer. Event-driven so real SFX can drop in later. No-ops safely where WebAudio is unavailable. POSITIONAL AUDIO (feat/audio-minimap): every blip can be placed in the world. `play(name, pos)` / `callout(name, pos)` accept an optional THREE.Vector3 (or any {x,y,z}); when given, the sound is routed through a PannerNode so it pans L/R by direction and attenuates by distance from the listener (the camera). Calls WITHOUT a position stay exactly as before — a plain mono blip on the master bus — so every existing caller (UI clicks, pickups, player steps) is unaffected. `setListener(pos, fwd)` syncs the WebAudio listener to the camera each frame; the loop calls it. Everything degrades gracefully: no WebAudio, no PannerNode, or a bad position all fall back to a plain mono blip.
 
 ## js/crafting.js
 
