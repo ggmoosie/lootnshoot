@@ -151,6 +151,7 @@ export const Enemies = (function(){
       hp, maxHp:hp, dmg:r.dmg*(1+(S.run?S.run.stopIndex*0.12:0)), accuracy:Math.min(0.85,r.accuracy+(S.run?S.run.stopIndex*0.03:0)),
       bar:barFg, barBg, alert:false, lastSeen:-99, nextShot:0, home:new T.Vector3(x,0,z),
       strafeDir:Math.random()<.5?-1:1, strafeT:0, dead:false,
+      footT:Math.random()*0.4,   // per-enemy footstep cadence timer (positional efoot SFX)
       // --- combat AI state ---
       mag:wDef.mag, ammo:wDef.mag, reload:wDef.reload, reloading:false, reloadEnd:0,
       hurtUntil:0, cover:null, peek:null, posture:'engage', // engage | tocover | peek | flank | search
@@ -173,10 +174,11 @@ export const Enemies = (function(){
     setTimeout(()=>{ if(!e.dead) e.parts.forEach(p=>p.material.emissive=new T.Color(0)); },60);
     const fr=Math.max(0,e.hp/e.maxHp); e.bar.scale.x=fr; e.bar.position.x=-(0.9*(1-fr))/2;
     Events.emit('alert',{pos:e.group.position.clone(), radius:26});
-    if(e.hp<=0) kill(e);
+    if(e.hp<=0){ kill(e); } else { Audio.play('ehurt', e.group.position); } // pained rasp on a non-fatal hit
   }
   function kill(e){
     e.dead=true; e.group.rotation.x=Math.PI/2; e.group.position.y=.3;
+    Audio.play('edeath', e.group.position);   // falling death rasp at the corpse
     e.bar.visible=false; e.barBg.visible=false; e.parts.forEach(p=>p.material.color=new T.Color(0x33282a));
     Loot.makeCorpse(e);
     Events.emit('enemy:killed', e); Events.emit('threats:changed');
@@ -309,7 +311,7 @@ export const Enemies = (function(){
       lastKnown.z + playerVel.z*lead
     );
     // throwers chirp the same "grenade" callout so the player hears it coming out
-    if(dist<70) Audio.callout('grenade');
+    if(dist<70) Audio.callout('grenade', e.group.position);
   }
   // release the frag once the windup completes.
   function releaseCook(e){
@@ -350,7 +352,7 @@ export const Enemies = (function(){
         e.losDeniedSince=0; e.searchUntil=0; e.searchPt=null; // we can see them — no need to search
         // refresh the squad's shared last-known player position
         lastKnown.copy(pp); haveLastKnown=true; lastKnownAt=Clock.now;
-        if(!e.sawPlayer){ e.sawPlayer=true; if(dist<60) Audio.callout('contact'); } // "Contact!" first spot
+        if(!e.sawPlayer){ e.sawPlayer=true; if(dist<60){ Audio.callout('contact', ep); Audio.callout('aggro', ep); } } // "Contact!" + aggro bark, positional, on first spot
         if(e.def.alertRadius) Events.emit('alert',{pos:pp.clone(),radius:e.def.alertRadius});
       } else if(e.alert && haveLastKnown){
         // alert but no LOS: remember when we lost the player (gates the flush-frag)
@@ -363,14 +365,14 @@ export const Enemies = (function(){
       // ----- reload bookkeeping (dry mag -> reload, duck while doing it) -----
       if(e.reloading && Clock.now>=e.reloadEnd){ e.reloading=false; e.ammo=e.mag; }
       const wantReload = e.alert && e.ammo<=0 && !e.reloading;
-      if(wantReload){ e.reloading=true; e.reloadEnd=Clock.now+e.reload; if(dist<55) Audio.callout('reloading'); }
+      if(wantReload){ e.reloading=true; e.reloadEnd=Clock.now+e.reload; if(dist<55) Audio.callout('reloading', ep); }
 
       if(e.alert){
         e.group.rotation.y=Math.atan2(pp.x-ep.x, pp.z-ep.z);
 
         // ----- decide posture: cover when grenade/hurt/reloading; else engage/flank -----
         const grenadeNear = nadePos && ep.distanceTo(nadePos)<NADE_DANGER;
-        if(grenadeNear && !e._nadeCalled){ e._nadeCalled=Clock.now; if(dist<70) Audio.callout('grenade'); }
+        if(grenadeNear && !e._nadeCalled){ e._nadeCalled=Clock.now; if(dist<70) Audio.callout('grenade', ep); }
         if(!grenadeNear){ if(e._nadeCalled && Clock.now-e._nadeCalled>2) e._nadeCalled=0; }
         // a frag landing close FLUSHES enemies out of their hole: drop cover/peek so
         // they relocate, and the blast pressure rattles them (suppression bump).
@@ -439,7 +441,11 @@ export const Enemies = (function(){
         // a thrower plants their feet during the cook windup (the telegraph reads
         // as a stationary wind-up rather than a moving target).
         if(e.cooking) mv.multiplyScalar(0.15);
-        if(mv.lengthSq()>0){ mv.normalize().multiplyScalar(e.def.speed*dt); World.moveActor(ep,mv,0.5); }
+        const moving = mv.lengthSq()>0;
+        if(moving){ mv.normalize().multiplyScalar(e.def.speed*dt); World.moveActor(ep,mv,0.5); }
+        // positional footsteps while actually moving — cadence scales with speed so
+        // a rusher's steps patter faster than a heavy's plod (audible() culls far ones).
+        if(moving){ e.footT-=dt; if(e.footT<=0){ e.footT=Math.max(0.22, 0.95-e.def.speed*0.12); Audio.play('efoot', ep); } }
 
         // ----- fire: only with LOS, not while reloading, not while diving for cover
         // from a grenade, and not mid grenade-cook. Suppression stretches cadence + accuracy.
@@ -451,7 +457,7 @@ export const Enemies = (function(){
           const to = hit ? new T.Vector3(pp.x,1.5,pp.z)
                          : new T.Vector3(pp.x+(Math.random()-.5)*2.4, 1.5+(Math.random()-.5)*1.2, pp.z+(Math.random()-.5)*2.4);
           fxTracer(from,to,0xff6644); tagEnemyTracer(); // tag so suppression ignores our own rounds
-          if(dist<46) Audio.play(dist<18?'shot':'shotSupp');
+          if(dist<46) Audio.play(dist<18?'shot':'shotSupp', ep); // positional: pans/attenuates by where the shot came from
           if(hit){ const fall=Math.max(0.35,1-dist/e.def.range); Player.damage(e.dmg*fall, ep); } }
 
         // give up only once LOS has been cold AND any active search has expired.
@@ -483,8 +489,9 @@ export const Enemies = (function(){
         e.role2='flank'; side*=-1; // alternate sides so they spread out
       }
     });
-    // a single "Flanking" chirp when the squad first commits, throttled
-    if(newFlankers>0 && Clock.now-lastFlankCall>6){ lastFlankCall=Clock.now; Audio.callout('flank'); }
+    // a single "Flanking" chirp when the squad first commits, throttled; anchored
+    // to the nearest engaged enemy so it pans from roughly where the squad is.
+    if(newFlankers>0 && Clock.now-lastFlankCall>6){ lastFlankCall=Clock.now; Audio.callout('flank', engaged[0]&&engaged[0].group.position); }
   }
 
   return { spawn, damage, update, clear, list, hitMeshes, aliveCount };
