@@ -736,16 +736,18 @@ Object.assign(DATA.ammoDefault, { '45':'45_fmj', '12g':'12g_buck', '338':'338_fm
 // guns exactly (damage/rpm/mag/reload/spread/adsSpread/adsTime/recoil/range/eff/
 // velocity/zoom/modes/slots). `slots` uses ONLY the established taxonomy
 // (optic/muzzle/foregrip/stock/laser/magazine/barrel) so the gunsmith + viewmodel
-// render them with zero code changes. NOTE: the shot path is single-hitscan, so
-// the shotgun is modeled as a wide-spread, high-damage, low-rpm hitscan (buckshot
-// feel) rather than literal pellets — pure-data, no new mechanic.
+// render them with zero code changes. NOTE: shotguns now fire a `pellets` count of
+// individual hitscan rays per shot (Weapons.fire loops them), each jittered inside
+// the spread cone — a real spread of pellets. `damage` is the WHOLE-shot total,
+// split across the pellets (so point-blank still hits ~full; misses bleed it off).
 Object.assign(DATA.weapons, {
   // LMG — belt-fed suppression: huge mag, hefty damage, but loose + kicky + slow
   // to bring up. 5.56 so it shares the common ammo economy.
   lmg:{name:'M249 SAW', cal:'556', damage:24, rpm:680, mag:100, reload:4.2, spread:0.020, adsSpread:0.006, adsTime:0.40, recoil:0.018, range:100, eff:62, velocity:900, zoom:1, modes:['auto'], slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
   // Combat shotgun — devastating point-blank, falls off hard (12g_buck range 0.55).
-  // Wide spread = the "spread of pellets". Pump cadence = low rpm + semi.
-  shotgun:{name:'M870 Breacher', cal:'12g', damage:115, rpm:90, mag:6, reload:2.8, spread:0.060, adsSpread:0.030, adsTime:0.26, recoil:0.034, range:38, eff:14, velocity:430, zoom:1, modes:['semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine']},
+  // `pellets:9` = a 9-pellet buckshot pattern thrown into the spread cone; `damage`
+  // is the full-shot total (each pellet does damage/pellets). Pump cadence = low rpm.
+  shotgun:{name:'M870 Breacher', cal:'12g', damage:115, pellets:9, rpm:90, mag:6, reload:2.8, spread:0.060, adsSpread:0.030, adsTime:0.26, recoil:0.034, range:38, eff:14, velocity:430, zoom:1, modes:['semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine']},
   // Bolt-action sniper — one-shot-kill ceiling, tiny mag, long reach, heavy recoil.
   bolt:{name:'AX-50 Bolt', cal:'338', damage:120, rpm:48, mag:5, reload:3.4, spread:0.004, adsSpread:0.0006, adsTime:0.46, recoil:0.045, range:240, eff:200, velocity:920, zoom:1, modes:['semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
   // MP5-class SMG — controllable, accurate close SMG in .45 (heavier hit than 9mm).
@@ -1067,8 +1069,8 @@ Object.assign(DATA.weapons, {
   // big damage, long reach, stiff recoil. A precise mid-long DMR/AR hybrid.
   battle:{name:'SCAR-H Battle', cal:'762', damage:52, rpm:520, mag:20, reload:2.1, spread:0.009, adsSpread:0.0018, adsTime:0.3, recoil:0.026, range:150, eff:120, velocity:870, zoom:1, modes:['semi','burst'], burst:2, slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
   // AUTO-SHOTGUN — 12g FULL-AUTO: faster cadence than the pump, 8-round box, brutal
-  // up close, falls off hard (buckshot range). The room-clearer.
-  autoshotgun:{name:'AA-12 Auto', cal:'12g', damage:96, rpm:300, mag:8, reload:3.2, spread:0.055, adsSpread:0.028, adsTime:0.3, recoil:0.03, range:36, eff:13, velocity:430, zoom:1, modes:['auto','semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine']},
+  // up close, falls off hard (buckshot range). The room-clearer. `pellets:8` per shot.
+  autoshotgun:{name:'AA-12 Auto', cal:'12g', damage:96, pellets:8, rpm:300, mag:8, reload:3.2, spread:0.055, adsSpread:0.028, adsTime:0.3, recoil:0.03, range:36, eff:13, velocity:430, zoom:1, modes:['auto','semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine']},
   // BURST CARBINE — 5.56 marksman carbine locked to a crisp 3-round BURST + semi
   // (no full-auto): high accuracy, controlled, the disciplined-trigger option.
   burstcarb:{name:'M16 Burst', cal:'556', damage:30, rpm:700, mag:30, reload:1.9, spread:0.01, adsSpread:0.0022, adsTime:0.24, recoil:0.013, range:105, eff:72, velocity:900, zoom:1, modes:['burst','semi'], burst:3, slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},

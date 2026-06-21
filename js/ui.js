@@ -726,9 +726,10 @@ export const UI = (function(){
       if(dropToWorld(d.uid)){ renderInventory(); refreshHUD(); }
       return;
     }
-    // gunsmith: drop an attachment onto its matching slot to install
+    // gunsmith: drop an attachment onto its matching slot — STAGE it into the draft
+    // (no inventory mutation, no charge; building or exiting decides what's real).
     if(modUid!=null && d.def.type==='attachment'){ const ms=modslotUnder(x,y);
-      if(ms){ if(ms.dataset.modslot===attachSlotOf(d.def)){ if(Inventory.installOn(modUid, d.uid)) Audio.play('ui'); renderMod(); refreshHUD(); } return; } }
+      if(ms){ if(ms.dataset.modslot===attachSlotOf(d.def)){ modDraft[ms.dataset.modslot]=d.def.id; Audio.play('ui'); openSlot=null; renderMod(); } return; } }
     // inventory paper-doll: drop an attachment onto an EQUIPPED weapon to attach it
     // to the right slot (installOn validates slot compatibility + pops any existing
     // part back to the kit). This is the drag-mod-onto-weapon path outside the gunsmith.
@@ -895,20 +896,79 @@ export const UI = (function(){
   // just rebuild the gun model — no per-toggle WebGL context churn). Disposed in
   // closeMenus to leave no leaked renderer/RAF.
   let modUid=null, openSlot=null, gunPrev=null, gunCanvas=null;
-  function openMod(weaponUid){ disposeGunPreview(); modUid=weaponUid; openSlot=null; openOverlay('ovMod'); renderMod(); }
+  // ---- BUILD-FLOW staging (fix/weapons-optics) --------------------------------
+  // The gunsmith is now a BUY-then-BUILD bench: changes are staged in a DRAFT and
+  // the real weapon is NOT touched until the player hits BUILD GUN and pays. So:
+  //   modBaseline = the gun's attachment config when the screen opened (the "prior
+  //                 config" we revert to on exit-without-building).
+  //   modDraft    = the working config the dropdowns mutate (slot -> attachment id).
+  // The player never receives an attachment unless it was already owned/installed
+  // OR purchased at BUILD time. Closing the screen just discards the draft (the real
+  // gun was never mutated), so exiting reverts to modBaseline for free — no leak.
+  let modBaseline={}, modDraft={};
+  function openMod(weaponUid){
+    disposeGunPreview(); modUid=weaponUid; openSlot=null;
+    const loc=Inventory.locate(weaponUid);
+    const cur=(loc&&loc.item&&loc.item.inst&&loc.item.inst.attachments)||{};
+    modBaseline={...cur}; modDraft={...cur};
+    openOverlay('ovMod'); renderMod();
+  }
   function disposeGunPreview(){
     if(gunPrev){ gunPrev.dispose(); gunPrev=null; }
     if(gunCanvas && gunCanvas.parentNode) gunCanvas.parentNode.removeChild(gunCanvas);
     gunCanvas=null;
+    // discard any unbuilt draft so a re-open starts fresh from the real gun
+    modBaseline={}; modDraft={};
   }
-  // (re)build the 3D model for the current weapon config and frame it
+  // a throwaway weapon-item view whose attachments = the DRAFT, so the 3D preview +
+  // the live stat readout reflect what you're CONFIGURING (not the real gun yet).
+  function draftItem(){ const loc=Inventory.locate(modUid); if(!loc) return null;
+    const it=loc.item; return {...it, inst:{...it.inst, attachments:{...modDraft}}}; }
+  // (re)build the 3D model for the current DRAFT config and frame it
   function refreshGunModel(){
-    const loc=Inventory.locate(modUid); if(!loc||!gunPrev) return;
-    gunPrev.setModel(Weapons.buildPreviewModel(loc.item));
+    const di=draftItem(); if(!di||!gunPrev) return;
+    gunPrev.setModel(Weapons.buildPreviewModel(di));
+  }
+  // how many of attachment id the player ALREADY owns across carried + stash grids.
+  function ownedCount(id){ let n=0; for(const g of [...Inventory.carried(), Inventory.stash()]) if(g) n+=g.count(id); return n; }
+  // is this draft attachment FREE to install? — it's already on the gun (baseline)
+  // or sitting in the player's inventory. Otherwise it must be bought.
+  function isFreeInstall(slot,id){
+    if(modBaseline[slot]===id) return true;     // already installed = keep, no charge
+    return ownedCount(id) > 0;                   // owned in kit = install, no charge
+  }
+  // total credits the current draft costs to BUILD: the buy price of every drafted
+  // attachment that isn't already owned/installed. Owned counts are decremented as we
+  // tally so two unowned copies of the same part in different... (only one slot each,
+  // so per-id at most once) — still safe.
+  function draftCost(){
+    let cost=0; const used={};
+    for(const slot in modDraft){ const id=modDraft[slot]; if(!id) continue;
+      if(modBaseline[slot]===id) continue;            // unchanged in this slot = free
+      const have=ownedCount(id)-(used[id]||0);
+      if(have>0){ used[id]=(used[id]||0)+1; continue; } // pull from kit = free
+      cost += Vendor.price(id);                         // must purchase
+    }
+    return cost;
+  }
+  // the FULL catalog of attachments that fit a given gunsmith slot — every
+  // attachment item in DATA.items routed to this slot (via attachSlotOf), NOT just
+  // ones the player owns. This is what the slot dropdown now lists (the user's "show
+  // ALL attachments that FIT that slot"). Built once + cached per slot.
+  let _attCatalog=null;
+  function catalogForSlot(slot){
+    if(!_attCatalog){ _attCatalog={};
+      for(const id in DATA.items){ const d=DATA.items[id]; if(d.type!=='attachment') continue;
+        const s=attachSlotOf(d); (_attCatalog[s]=_attCatalog[s]||[]).push(d); }
+      for(const s in _attCatalog) _attCatalog[s].sort((a,b)=>(a.value||0)-(b.value||0));
+    }
+    return _attCatalog[slot]||[];
   }
   function renderMod(){
     const loc=Inventory.locate(modUid); if(!loc||loc.item.def.type!=='weapon'){ closeMenus(); return; }
-    const it=loc.item, wDef=DATA.weapons[it.def.weapon], st=Weapons.stats(it), base=DATA.weapons[it.def.weapon];
+    const it=loc.item, wDef=DATA.weapons[it.def.weapon], base=DATA.weapons[it.def.weapon];
+    // stats reflect the DRAFT config (what you're building), not the real gun yet.
+    const di=draftItem(); const st=Weapons.stats(di)||base;
     // baseline = the weapon with NO mods (1.0 scalars defaulted) so the live
     // readout's up/dn arrows compare the configured gun against the bare gun.
     const bareInst={...it, inst:{...it.inst, attachments:{}}};
@@ -919,25 +979,23 @@ export const UI = (function(){
     const layout={ optic:{card:[50,8]}, barrel:{card:[84,30]}, muzzle:{card:[84,52]},
       foregrip:{card:[62,52]}, laser:{card:[38,52]}, magazine:{card:[17,52]}, stock:{card:[15,30]},
       tactical:{card:[62,52]} };
-    // available parts per slot from the player's INVENTORY (carried rig/backpack
-    // grids + stash). Detection routes each attachment to a gunsmith slot by its
-    // EFFECT-def slot (DATA.attachments[id].slot) first, falling back to the item
-    // def slot — so a part whose two defs drifted apart (legacy data) still lands
-    // in the right slot instead of silently vanishing (the old empty-set bug).
-    const avail={}; wDef.slots.forEach(s=>avail[s]=[]);
-    const partSlot=def=>{ const eff=DATA.attachments[def.id]; const s=(eff&&eff.slot)||def.slot; return s==='tactical'?'foregrip':s; };
-    const grids=[...Inventory.carried(), Inventory.stash()];
-    for(const g of grids){ if(!g) continue; for(const t of g.items){ if(t.def.type!=='attachment') continue; const s=partSlot(t.def); if(avail[s]) avail[s].push(t); } }
-    // HTML callout cards with dropdowns
+    // HTML callout cards with dropdowns. Each dropdown lists EVERY attachment that
+    // fits the slot (the full catalog), tagged owned / installed / a buy price.
     let cards='';
     for(const sl of wDef.slots){ const L=layout[sl]; if(!L) continue;
-      const cur=it.inst.attachments[sl], curDef=cur?DATA.items[cur]:null; const open=openSlot===sl;
-      const opts = (cur?`<div class="bpopt rem" data-rem="${sl}"><span class="bpic">✕</span><span>Remove</span></div>`:'')
-        + ((avail[sl]||[]).map(a=>`<div class="bpopt ${cur===a.def.id?'sel':''}" data-ins="${a.uid}"><span class="bpic">${iconHTML(a.def)}</span><span>${a.def.name}</span></div>`).join('')
-           || (cur?'':'<div class="bpopt none">No parts in your kit</div>'));
-      // data-modslot makes the card header a real attachment DROP target (this was
-      // missing — the drag-attach path in drop()/highlight() looked for it and found
-      // nothing, so gunsmith drag-to-install never fired). Click-toggle still works.
+      const cur=modDraft[sl], curDef=cur?DATA.items[cur]:null; const open=openSlot===sl;
+      const list=catalogForSlot(sl).map(d=>{
+        const sel=cur===d.id;
+        // tag: INSTALLED (was on the gun at open) · OWNED (in kit) · price to buy
+        const free=isFreeInstall(sl,d.id);
+        const tag = modBaseline[sl]===d.id ? '<span class="bpprice owned">installed</span>'
+          : ownedCount(d.id)>0 ? '<span class="bpprice owned">owned</span>'
+          : `<span class="bpprice">${Vendor.price(d.id)}c</span>`;
+        return `<div class="bpopt ${sel?'sel':''}" data-pick="${sl}|${d.id}"><span class="bpic">${iconHTML(d)}</span><span class="bpnm2">${d.name}</span>${tag}</div>`;
+      }).join('');
+      const opts = (cur?`<div class="bpopt rem" data-clear="${sl}"><span class="bpic">✕</span><span>Remove</span></div>`:'')
+        + (list || '<div class="bpopt none">No parts fit this slot</div>');
+      // data-modslot keeps the card header a valid drag DROP target; click-toggle works.
       cards+=`<div class="bpcard ${cur?'filled':''} ${open?'open':''}" data-modslot="${sl}" style="left:${L.card[0]}%;top:${(L.card[1]/60*100).toFixed(2)}%">
         <div class="bphd" data-toggle="${sl}"><span class="bpic">${cur?iconHTML(curDef):slotIcon[sl]}</span>
           <span class="bptxt"><span class="bpsl">${sl}</span><span class="bpnm">${cur?curDef.name:'— empty'}</span></span><span class="bpcar">▾</span></div>
@@ -954,18 +1012,32 @@ export const UI = (function(){
       ['Hip Acc',st.hipAccuracy,bare.hipAccuracy,1],
     ];
     const statHTML=rows.map(r=>{ const cur=r[1], bs=r[2], better=r[3]; let cls=''; if(Math.abs(cur-bs)>1e-6) cls=((cur>bs)===(better>0))?'up':'dn'; const fmt=v=>(Math.round(v*1000)/1000); return `<div class="bpstat"><span class="sl">${r[0]}</span><span class="sv ${cls}">${fmt(cur)}</span></div>`; }).join('');
-    // Close/Done pinned at the TOP (cross-project convention) next to the title +
-    // slot-fill pill; the 3D stage and the stat readout follow below.
+    // BUILD GUN: totals the price of everything drafted-but-unowned. Dirty = the
+    // draft differs from the gun's current config. Disabled when nothing changed,
+    // or when the bill exceeds the wallet.
+    const cost=draftCost();
+    const dirty=JSON.stringify(modDraft)!==JSON.stringify(modBaseline);
+    const cr=S.profile.credits;
+    const afford=cost<=cr;
+    const buildLabel = !dirty ? 'No changes'
+      : cost>0 ? `Build Gun · ${cost}c` : 'Build Gun · free';
+    const buildCls = (dirty && afford) ? '' : 'disabled';
+    // Close/Done pinned at the TOP; the 3D stage + stat readout + build bar follow.
     $('modCard').innerHTML=`<div class="shophead" style="align-items:center">
-        <div><div class="eb">Gunsmith // Live Render</div><h1 style="margin:0">${it.def.name}</h1></div>
+        <div><div class="eb">Gunsmith // Build Bench</div><h1 style="margin:0">${it.def.name}</h1></div>
         <div style="display:flex;align-items:center;gap:10px">
-          <div class="creditpill">${Object.keys(it.inst.attachments||{}).length}/${wDef.slots.length} slots</div>
+          <div class="creditpill">💰 ${cr}c</div>
+          <div class="creditpill">${Object.keys(modDraft).filter(s=>modDraft[s]).length}/${wDef.slots.length} slots</div>
           <div class="btn" id="modClose" style="width:auto;margin:0;display:inline-block"><span class="k">ESC</span> Done</div>
         </div>
       </div>
-      <div class="bphint">Drag a part onto its slot to attach · drag an installed part off (or tap ✕) to send it back to your kit.</div>
+      <div class="bphint">Pick any part that fits a slot — drafts are FREE to try. Hit BUILD GUN to buy the new parts and assemble. Exit without building and the gun reverts — you’re never charged.</div>
       <div class="bpstage" id="bpstage">${cards}</div>
-      <div class="bpstats">${statHTML}</div>`;
+      <div class="bpstats">${statHTML}</div>
+      <div class="bpbuildbar">
+        <div class="bpbill">${dirty?(cost>0?`Bill: <b class="${afford?'':'no'}">${cost}c</b> · Wallet: ${cr}c`:'No parts to purchase'):'Configure your build, then assemble.'}</div>
+        <div class="btn build ${buildCls}" id="modBuild" style="width:auto;margin:0"><span class="k">▣</span> ${buildLabel}</div>
+      </div>`;
     // create the persistent 3D canvas + preview once; on later re-renders just
     // re-attach the existing canvas (innerHTML above wiped the stage) so the
     // WebGL context survives, then rebuild the model to reflect the new config.
@@ -983,8 +1055,43 @@ export const UI = (function(){
     $('modClose').onclick=closeMenus;
     $('bpstage').addEventListener('pointerdown', ev=>{ if(!ev.target.closest('.bpcard')){ openSlot=null; renderMod(); } });
     $('modCard').querySelectorAll('[data-toggle]').forEach(b=>b.onclick=()=>{ openSlot=openSlot===b.dataset.toggle?null:b.dataset.toggle; renderMod(); });
-    $('modCard').querySelectorAll('[data-ins]').forEach(b=>b.onclick=()=>{ Inventory.installOn(modUid,b.dataset.ins*1); openSlot=null; renderMod(); refreshHUD(); });
-    $('modCard').querySelectorAll('[data-rem]').forEach(b=>b.onclick=()=>{ Inventory.removeAttachment(modUid,b.dataset.rem); openSlot=null; renderMod(); refreshHUD(); });
+    // pick = stage into the draft (NO purchase, NO inventory change yet)
+    $('modCard').querySelectorAll('[data-pick]').forEach(b=>b.onclick=()=>{ const [sl,id]=b.dataset.pick.split('|'); modDraft[sl]=id; openSlot=null; Audio.play('ui'); renderMod(); });
+    $('modCard').querySelectorAll('[data-clear]').forEach(b=>b.onclick=()=>{ delete modDraft[b.dataset.clear]; openSlot=null; Audio.play('ui'); renderMod(); });
+    const bb=$('modBuild'); if(bb) bb.onclick=()=>{ if(dirty&&afford) buildGun(); };
+  }
+  // BUILD: pay for + commit the draft. Charges the buy price of every drafted part
+  // the player doesn't already own/have installed; pulls owned parts from the kit;
+  // returns any baseline parts the draft dropped back to the stash. Only mutates the
+  // real weapon + wallet HERE — so exiting before this leaves everything untouched.
+  function buildGun(){
+    const loc=Inventory.locate(modUid); if(!loc||loc.item.def.type!=='weapon') return;
+    const it=loc.item;
+    const cost=draftCost();
+    if(cost>S.profile.credits){ UI.toast('Not enough credits','neg'); return; }
+    // resolve every drafted slot: keep (installed), pull (owned), or buy (charge).
+    const grids=[...Inventory.carried(), Inventory.stash()];
+    const pull=id=>{ for(const g of grids){ if(g&&g.count(id)>0){ g.consume(id,1); return true; } } return false; };
+    let spent=0;
+    const finalAtt={};
+    for(const sl in modDraft){ const id=modDraft[sl]; if(!id) continue;
+      if(modBaseline[sl]===id){ finalAtt[sl]=id; continue; }      // unchanged: keep as-is
+      if(pull(id)){ finalAtt[sl]=id; continue; }                  // owned: install from kit
+      const p=Vendor.price(id); spent+=p; finalAtt[sl]=id;        // buy: charge
+    }
+    // return any baseline parts that are no longer in the build to the stash (a part
+    // you'd previously installed and now removed/replaced isn't destroyed). Stash in
+    // the hub; fall back to a carried grid if the stash is full.
+    for(const sl in modBaseline){ const oldId=modBaseline[sl];
+      if(oldId && finalAtt[sl]!==oldId){ const back=Inventory.newItem(oldId,1);
+        if(back && Inventory.stash().add(back)!==0) Inventory.addLoot(back); } }
+    S.profile.credits-=spent;
+    it.inst.attachments={...finalAtt};
+    modBaseline={...finalAtt}; modDraft={...finalAtt};
+    Audio.play('equip');
+    UI.toast(spent>0?`Built · −${spent}c`:'Gun assembled','pos');
+    Events.emit('weapon:changed'); Events.emit('inv:changed'); Events.emit('progress:changed');
+    Save.save(); refreshHUD(); renderMod();
   }
 
   // ---------- REPORT (bug / feature) ----------

@@ -22,6 +22,12 @@ export const Weapons = (function(){
   const ray=new T.Raycaster();
   let lastShot=0, reloading=false, reloadEnd=0;
   let gun=null, muzzle=null, attachGroup=null, lastAttachSig='', laserDot=null, ironSight=null;
+  // the housing meshes of an installed MAGNIFYING scope (tube/rings/lens/pip). Kept in
+  // a list so update() can HIDE them the instant you're fully scoped-in: once you're
+  // looking through the optic the magnified image + the DOM scope overlay ARE the sight
+  // picture, so the near-camera tube walls / objective ring must not loom in and block
+  // it. They reappear at hip so the gun still reads as scoped. Empty for red-dot/holo.
+  let scopeHousing=[];
   // muzzleTip = an empty Object3D pinned at the BARREL TIP / compensator in gun-local
   // space (moved by refreshAttachments to the end of whatever barrel/muzzle device is
   // installed). Bullets/tracers + the muzzle flash originate from its WORLD position
@@ -272,7 +278,14 @@ export const Weapons = (function(){
     refreshBody(it);   // swap the per-class body silhouette if the weapon class changed
     while(attachGroup.children.length) attachGroup.remove(attachGroup.children[0]);
     if(!it){ if(ironSight) ironSight.visible=true; sightLocal.set(.22,-.095,-.5); return; }
-    const att=it.inst.attachments||{}; const dark=new T.MeshStandardMaterial({color:0x101316,roughness:.5,metalness:.6});
+    // DOUBLE-SIDED attachment material: low-poly procedural parts (open cylinders,
+    // torii, flat lips, box clusters) get viewed from many angles by the bob/sway/ADS
+    // viewmodel pose. With single-sided (default FrontSide) culling, any face whose
+    // winding pointed away from the eye rendered INVISIBLE / inside-out (scope housings
+    // and flat spreaders looked see-through or backwards). DoubleSide draws both faces
+    // so nothing is one-sided regardless of winding. (Shared, like before — no per-mesh mat.)
+    const att=it.inst.attachments||{}; const dark=new T.MeshStandardMaterial({color:0x101316,roughness:.5,metalness:.6,side:T.DoubleSide});
+    scopeHousing=[];   // reset — repopulated below only for a magnifying scope
     // IRON SIGHTS are the bare-gun sight picture — hide them the moment an optic is
     // installed (you aim through the optic instead), show them again when it's off.
     if(ironSight) ironSight.visible = !att.optic;
@@ -280,30 +293,33 @@ export const Weapons = (function(){
     sightLocal.set(.22,-.095,-.5);
     if(att.optic){ const opEff=DATA.attachments[att.optic]; const scope=(opEff&&opEff.reticle)?opEff.reticle==='crosshair':att.optic==='att_scope';
       if(scope){
-        // MAGNIFIED SCOPE — a SEE-THROUGH tube you look down the bore of. Built so
-        // NOTHING opaque sits in the sightline: an open scope BODY (hollow cylinder,
-        // BackSide so you see its inner wall but not a capped front), a CLEAR glass
-        // lens disc at the eye end (very low opacity, additive — a faint tint, not a
-        // wall), and a soft glowing translucent reticle pip floating at the lens
-        // centre. The FOV-zoom (update()) supplies the magnified image; this body just
-        // frames it. Mounts on a slim base UNDER the bore so the rail isn't in the way.
-        const tubeMat=new T.MeshStandardMaterial({color:0x0c0f12,roughness:.5,metalness:.6,side:T.BackSide});
+        // MAGNIFIED SCOPE — a SEE-THROUGH tube you look down the bore of. The whole
+        // HOUSING is collected into scopeHousing so update() can HIDE it the instant
+        // you're fully scoped-in: once you look through the optic, the magnified image
+        // + the round DOM scope overlay + a small glowy-dot reticle ARE the sight
+        // picture, so the near-camera tube wall / objective ring must NOT loom in and
+        // block the view (the bug). The housing reappears at hip so the gun still
+        // reads as scoped. Built thin + open so even when visible nothing opaque caps
+        // the bore. Mounts on a slim base UNDER the line so the rail isn't in the way.
+        const stash=m=>{ attachGroup.add(m); scopeHousing.push(m); };
+        const tubeMat=new T.MeshStandardMaterial({color:0x0c0f12,roughness:.5,metalness:.6,side:T.DoubleSide});
         const tube=new T.Mesh(new T.CylinderGeometry(.05,.05,.26,16,1,true), tubeMat);
-        tube.rotation.x=Math.PI/2; tube.position.set(.22,-.06,-.6); attachGroup.add(tube);
+        tube.rotation.x=Math.PI/2; tube.position.set(.22,-.06,-.6); stash(tube);
         // thin objective ring at the FAR (forward) end so the tube reads as an optic,
         // not just a hole — a torus, never a solid cap, so the view stays open.
-        const oRing=new T.Mesh(new T.TorusGeometry(.05,.006,8,20), dark); oRing.position.set(.22,-.06,-.73); attachGroup.add(oRing);
-        const eRing=new T.Mesh(new T.TorusGeometry(.05,.006,8,20), dark); eRing.position.set(.22,-.06,-.47); attachGroup.add(eRing);
+        const oRing=new T.Mesh(new T.TorusGeometry(.05,.006,8,20), dark); oRing.position.set(.22,-.06,-.73); stash(oRing);
+        const eRing=new T.Mesh(new T.TorusGeometry(.05,.006,8,20), dark); eRing.position.set(.22,-.06,-.47); stash(eRing);
         // clear glass lens at the eye end — barely-there tint, additive, see-through.
         const lens=new T.Mesh(new T.CircleGeometry(.046,18),
-          new T.MeshBasicMaterial({color:0x9fd8ff,transparent:true,opacity:.10,blending:T.AdditiveBlending,depthWrite:false,side:T.DoubleSide}));
-        lens.position.set(.22,-.06,-.48); attachGroup.add(lens);
+          new T.MeshBasicMaterial({color:0x9fd8ff,transparent:true,opacity:.08,blending:T.AdditiveBlending,depthWrite:false,side:T.DoubleSide}));
+        lens.position.set(.22,-.06,-.48); stash(lens);
         // slim under-bore mount so the body floats on the rail (not a block in the line)
-        const sbase=new T.Mesh(new T.BoxGeometry(.022,.03,.18), dark); sbase.position.set(.22,-.10,-.6); attachGroup.add(sbase);
-        // glowing translucent centre pip (the reticle dot you see through the glass).
+        const sbase=new T.Mesh(new T.BoxGeometry(.022,.03,.18), dark); sbase.position.set(.22,-.10,-.6); stash(sbase);
+        // glowing translucent centre pip (the reticle dot you see through the glass) —
+        // a SMALL glowy dot, never an opaque block (matches the DOM scope reticle).
         const pipC=parseInt((opEff&&opEff.reticleColor||'#cfe8ff').slice(1),16)||0xcfe8ff;
         const pipMat=new T.SpriteMaterial({map:glowTexture(),color:pipC,transparent:true,opacity:.7,blending:T.AdditiveBlending,depthTest:false,depthWrite:false});
-        const pip=new T.Sprite(pipMat); pip.scale.set(.01,.01,.01); pip.position.set(.22,-.06,-.482); attachGroup.add(pip);
+        const pip=new T.Sprite(pipMat); pip.scale.set(.008,.008,.008); pip.position.set(.22,-.06,-.482); stash(pip);
         sightLocal.set(.22,-.06,-.48);   // aim through the scope lens centre
       } else {
         // RED-DOT / HOLO: a SLEEK low-profile optic — a thin open ring frame on a
@@ -467,8 +483,10 @@ export const Weapons = (function(){
     const long = wk==='dmr', pistol = wk==='pistol', smg = wk==='smg';
     const barrelLen = pistol?0.34 : long?1.5 : smg?0.78 : 1.05;
     const bodyLen   = pistol?0.34 : long?0.7  : smg?0.5  : 0.62;
-    const steel = ()=> new T.MeshStandardMaterial({color:0x2a2f34, roughness:.55, metalness:.55});
-    const dark  = ()=> new T.MeshStandardMaterial({color:0x14171a, roughness:.5,  metalness:.6});
+    // DoubleSide everywhere: the gunsmith preview AUTO-ROTATES a full 360°, so any
+    // single-sided face would vanish / read inside-out from the back half of the spin.
+    const steel = ()=> new T.MeshStandardMaterial({color:0x2a2f34, roughness:.55, metalness:.55, side:T.DoubleSide});
+    const dark  = ()=> new T.MeshStandardMaterial({color:0x14171a, roughness:.5,  metalness:.6,  side:T.DoubleSide});
     // receiver (the gun's "body" box) — model centered roughly on it
     const body = new T.Mesh(new T.BoxGeometry(bodyLen, 0.14, 0.05), steel());
     g.add(body);
@@ -499,7 +517,7 @@ export const Weapons = (function(){
     // --- equipped attachments (tinted by the part's rarity) ---
     const att = item.inst.attachments || {};
     const tint = id => { const d = DATA.items[id]; return rarityColor(d?d.rarity||1:1); };
-    const attMat = id => new T.MeshStandardMaterial({color:tint(id), roughness:.4, metalness:.5});
+    const attMat = id => new T.MeshStandardMaterial({color:tint(id), roughness:.4, metalness:.5, side:T.DoubleSide});
     if(att.optic){ const opEff = DATA.attachments[att.optic]; const scope = (opEff&&opEff.reticle)?opEff.reticle==='crosshair':att.optic==='att_scope';
       // mount rail + optic body sitting on top of the receiver
       const mount = new T.Mesh(new T.BoxGeometry(scope?0.26:0.1, 0.04, 0.04), dark());
@@ -593,6 +611,8 @@ export const Weapons = (function(){
     s.adsSpread=Math.max(0.0002, s.adsSpread); s.adsTime=Math.max(0.06, s.adsTime);
     s.reload=Math.max(0.4, s.reload); s.range=Math.max(8, s.range); s.eff=Math.max(6, s.eff||s.range*0.6);
     s.zoom=clamp(s.zoom||1, 1, 8); s.handling=clamp(s.handling,0.5,2); s.mobility=clamp(s.mobility,0.6,1.6);
+    // pellets-per-shot (shotguns): default 1 (single bullet). Floored to a whole >=1.
+    s.pellets=Math.max(1, Math.round(s.pellets||1));
     return s;
   }
   // ---- WEAPON SWAP: holster the current gun, switch slot, draw the new one.
@@ -700,13 +720,18 @@ export const Weapons = (function(){
       add(`width:5px;height:5px;margin:-2.5px 0 0 -2.5px;border-radius:50%;background:${c};`
         +`box-shadow:0 0 8px 2px ${c}, 0 0 14px ${c}aa;`);
     } else if(sight.reticle==='crosshair'){
-      // scope crosshair: four thin arms + tiny center dot (the aim point)
-      const arm=`background:${c};box-shadow:0 0 3px ${c};`;
-      add(`width:1.5px;height:16px;margin:-22px 0 0 -.75px;${arm}`);
-      add(`width:1.5px;height:16px;margin:6px 0 0 -.75px;${arm}`);
-      add(`width:16px;height:1.5px;margin:-.75px 0 0 -22px;${arm}`);
-      add(`width:16px;height:1.5px;margin:-.75px 0 0 6px;${arm}`);
-      add(`width:3px;height:3px;margin:-1.5px 0 0 -1.5px;border-radius:50%;background:${c};box-shadow:0 0 5px ${c};`);
+      // SCOPE: a small GLOWY center DOT — the clean sight picture the user asked for,
+      // not an opaque crosshair block in the middle of the magnified view. Four very
+      // thin, FADED hairlines sit well OUT from center (a gap around the dot) purely
+      // as orientation marks; they're 1px + low-opacity so they never obstruct.
+      const arm=`background:${c};opacity:.45;box-shadow:0 0 2px ${c};`;
+      add(`width:1px;height:9px;margin:-26px 0 0 -.5px;${arm}`);   // top  (gap 12→9px arm)
+      add(`width:1px;height:9px;margin:13px 0 0 -.5px;${arm}`);    // bottom
+      add(`width:9px;height:1px;margin:-.5px 0 0 -26px;${arm}`);   // left
+      add(`width:9px;height:1px;margin:-.5px 0 0 13px;${arm}`);    // right
+      // the aim point: a small bright glowy dot (soft halo, never an opaque slab)
+      add(`width:4px;height:4px;margin:-2px 0 0 -2px;border-radius:50%;background:${c};`
+        +`box-shadow:0 0 6px 1px ${c}, 0 0 12px ${c}aa;`);
     } else {
       // IRON sights: a rear notch (two posts) framing a front post at center.
       const metal=`background:${c};box-shadow:0 0 2px rgba(0,0,0,.7);opacity:.92;`;
@@ -870,38 +895,52 @@ export const Weapons = (function(){
     GFX.yaw.rotation.y += (Math.random()-0.5)*kick*0.5;
     // subtle muzzle camera-shake scaled to the gun's recoil (damped while scoped).
     GFX.shake(clamp(kick*4.2, 0.04, 0.4)*(S.player.ads?0.5:1));
-    // spread
+    // spread + shot geometry. A shotgun throws st.pellets rays; everything else is
+    // one. The per-shot `damage` is SPLIT across pellets so a full point-blank pattern
+    // ≈ the old single-hitscan number, while a partial hit bleeds off naturally.
     const spread = S.player.ads?st.adsSpread:st.spread;
-    const dir=new T.Vector3(); GFX.camera.getWorldDirection(dir);
-    dir.x+=(Math.random()*2-1)*spread; dir.y+=(Math.random()*2-1)*spread; dir.z+=(Math.random()*2-1)*spread; dir.normalize();
+    const baseDir=new T.Vector3(); GFX.camera.getWorldDirection(baseDir);
     const org=new T.Vector3(); GFX.camera.getWorldPosition(org);
     Perception.shot(org, suppressed); Audio.play(suppressed?'shotSupp':'shot');
     // round range/velocity scales the hitscan reach + falloff window
     const rngMult = at.range||1;
     const range = st.range*rngMult, eff = (st.eff||st.range*0.6)*rngMult;
-    ray.set(org,dir); ray.far=range;
     const targets=[...World.solids, ...Enemies.hitMeshes()];
-    const hits=ray.intersectObjects(targets,false);
-    const endPt = hits.length ? hits[0].point : org.clone().addScaledVector(dir, range);
     // BARREL-TIP origin: the tracer + muzzle flash leave the gun's actual muzzle
     // (muzzleTip's WORLD position), NOT the camera centre. Falls back to the old
     // eye-relative offset only if the anchor isn't built yet (shouldn't happen in a raid).
     let muzzlePt;
     if(muzzleTip){ muzzlePt=muzzleTip.getWorldPosition(new T.Vector3()); }
-    else { muzzlePt=org.clone().addScaledVector(dir,0.6); muzzlePt.y-=0.12; }
-    // SPARKY GLOWY muzzle flash at the real muzzle, thrown down the bore (suppressors
-    // flash much less). Replaces the old screen-blocking opaque sprite.
-    if(!suppressed) FX.muzzle(muzzlePt, dir, at.color||0xffd9a0);
-    else { FX.muzzle(muzzlePt, dir, 0x8899aa); }
-    // tracer: tinted by the round; tracer rounds glow noticeably brighter/longer
-    fxTracer(muzzlePt, endPt, at.color||0xffd27a);
-    if(hits.length){ const o=hits[0].object; const e=o.userData.enemy;
-      if(e&&!e.dead){ const head=o.userData.part==='head'; const d=hits[0].distance;
-        const fo = d<=eff?1:clamp(1-(d-eff)/((range-eff)||1)*0.62, 0.38, 1);
-        const dmg = st.damage*(at.dmg||1)*(head?2.2:1)*fo*armorMult(e, head, at.pen);
-        Enemies.damage(e, dmg); UI.hit(head, e.dead); FX.impact(hits[0].point, 0xcc3322); }
-      else FX.impact(hits[0].point, 0xc8c0ac); }
+    else { muzzlePt=org.clone().addScaledVector(baseDir,0.6); muzzlePt.y-=0.12; }
+    const pellets=st.pellets||1;
+    // shotguns spread WIDER than the single-shot cone reads (the spread stat is tuned
+    // for one ray) so the pattern looks like buckshot; single-shot guns use spread 1:1.
+    const cone = spread * (pellets>1 ? 1.6 : 1);
+    const perPelletDmg = (st.damage*(at.dmg||1)) / pellets;
+    // aggregate hit feedback so a pellet swarm pops ONE hitmarker per shot, not nine.
+    let anyHead=false, anyHit=false, anyKill=false;
+    for(let p=0;p<pellets;p++){
+      const dir=baseDir.clone();
+      dir.x+=(Math.random()*2-1)*cone; dir.y+=(Math.random()*2-1)*cone; dir.z+=(Math.random()*2-1)*cone; dir.normalize();
+      ray.set(org,dir); ray.far=range;
+      const hits=ray.intersectObjects(targets,false);
+      const endPt = hits.length ? hits[0].point : org.clone().addScaledVector(dir, range);
+      // tracer per pellet so the spread is visible; tinted by the round.
+      fxTracer(muzzlePt, endPt, at.color||0xffd27a);
+      if(hits.length){ const o=hits[0].object; const e=o.userData.enemy;
+        if(e&&!e.dead){ const head=o.userData.part==='head'; const d=hits[0].distance;
+          const fo = d<=eff?1:clamp(1-(d-eff)/((range-eff)||1)*0.62, 0.38, 1);
+          const dmg = perPelletDmg*(head?2.2:1)*fo*armorMult(e, head, at.pen);
+          Enemies.damage(e, dmg); anyHit=true; if(head) anyHead=true; if(e.dead) anyKill=true;
+          FX.impact(hits[0].point, 0xcc3322); }
+        else FX.impact(hits[0].point, 0xc8c0ac); }
+    }
     ray.far=Infinity;
+    // SPARKY GLOWY muzzle flash at the real muzzle, thrown down the bore (suppressors
+    // flash much less). One flash per shot (not per pellet).
+    if(!suppressed) FX.muzzle(muzzlePt, baseDir, at.color||0xffd9a0);
+    else { FX.muzzle(muzzlePt, baseDir, 0x8899aa); }
+    if(anyHit) UI.hit(anyHead, anyKill);
     Events.emit('weapon:changed');
     return true;
   }
@@ -1129,6 +1168,11 @@ export const Weapons = (function(){
     // scope-view overlay: show the round vignette only while scoped-in
     if(scoped){ ensureScope().style.opacity='1'; }
     else if(scopeEl){ scopeEl.style.opacity='0'; }
+    // HIDE the 3D scope HOUSING while fully scoped-in (the magnified image + the round
+    // DOM scope overlay + a small glowy-dot reticle are the sight picture now). When
+    // not scoped (hip / red-dot / no optic) the housing shows so the gun reads as
+    // scoped. This is what clears the "geometry inside the scope blocking the view".
+    if(scopeHousing.length){ const showHousing=!scoped; for(const m of scopeHousing) m.visible=showHousing; }
     // a holstered gun can't aim: drop the ADS intent so nothing downstream zooms.
     S.player.ads = Input.ads && !holstered;
   }
