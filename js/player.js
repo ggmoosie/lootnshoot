@@ -60,7 +60,7 @@ export const Player = (function(){
     vault={ t:0, dur:plan.dur||0.45, type:plan.type,
             sx:p.x, sz:p.z, lipx:plan.lip.x, lipz:plan.lip.z, lx:plan.land.x, lz:plan.land.z,
             cx:p.x, cz:p.z, cy:startY,            // last KNOWN-CLEAR position on the path
-            startY, peakY, landY:plan.landY||0, blocked:false };
+            startY, peakY, landY:plan.landY||0, top:plan.top||peakY, blocked:false };
     Audio.play('ui');
   }
   // ---- WALL-CLIMB probe (run into a wall + look straight up → mantle up) -----
@@ -129,28 +129,43 @@ export const Player = (function(){
     const ease=k<0.5 ? 2*k*k : 1-Math.pow(-2*k+2,2)/2;            // easeInOutQuad over the whole move
     const s=vaultSample(ease);
     const p=GFX.yaw.position;
-    // CLAMP XZ — HEIGHT-AWARE. The OLD test re-probed every collider at the next
-    // point, but the planned path runs OVER (vault) or ONTO (mantle) the very
-    // obstacle we're surmounting — whose footprint the lip/landing sit inside — so
-    // a plain spotClear always failed there, froze the body at the near face, and
-    // the settle push then SHOVED YOU BACK (the "vault just pushes you back" bug).
-    // Fix: a point is clear to move into if our FEET (s.y) are at/above whatever
-    // stands there — i.e. we only stop for something TALLER than our current feet.
-    // groundTopAt(x,z) = tallest collider top under (x,z); if feet clear it (with a
-    // little slack) we glide over/onto it. We still STOP dead at a real taller wall
-    // (its top > our feet), so we never clip through a building. A thin spotClear at
-    // foot level is kept ONLY for the start of the rise (feet still near ground), to
-    // catch a wall hugging the obstacle before we've lifted over the lip.
+    // CLAMP XZ — HEIGHT-AWARE, anchored to the OBSTACLE WE'RE SURMOUNTING.
+    //
+    // History: the first fix re-probed colliders with a plain spotClear, which always
+    // failed over our own obstacle and shoved the body back ("vault pushes you back").
+    // The second fix gated on FEET vs ground (s.y >= obstTop-0.25) — but the planned
+    // path advances XZ toward the lip FASTER than Y rises (XZ ~linear, Y smoothstep
+    // with zero slope at t=0), so as soon as XZ enters the obstacle's footprint the
+    // body's feet are still near the floor while obstTop jumps to the obstacle top →
+    // feet "fail" → `blocked` latched on frame ~2 → vault froze and pushed back. THAT
+    // is the remaining intermittent vault failure (worse on deeper/taller obstacles
+    // and shallow approach angles, where XZ outruns Y the most).
+    //
+    // Root-cause fix: the plan (world.js marchLanding) ALREADY proved a clear corridor
+    // over/onto an obstacle of height `vault.top`. So a sample is safe to enter when
+    // what stands there is EITHER (a) our own obstacle or anything no taller than it
+    // (obstTop <= vault.top + slack — we're going up and over it by design), OR (b)
+    // already cleared by our feet (s.y >= obstTop - slack — we've risen above it).
+    // We ONLY block for something genuinely TALLER than the obstacle we planned to
+    // surmount AND above our feet — an unexpected wall on the corridor — which the
+    // proven plan makes a freak case. This no longer races XZ against Y, so the rise
+    // never self-blocks.
+    //
+    // NOTE — the old foot-level `spotClear` start-guard was REMOVED: on an OBLIQUE
+    // approach the body's disc clips the obstacle's near EDGE while the feet are still
+    // low, so the guard tripped and the vault self-blocked at the lip (the remaining
+    // intermittent "vault fails sometimes" — worst at angled entries; the harness
+    // covers it). It was redundant anyway: a DIFFERENT wall hugging the near face is
+    // always TALLER than the surmountable obstacle, so the height test below already
+    // stops us; the obstacle we're climbing is exactly the thing we WANT to pass.
+    const SLACK=0.25;
     const obstTop = World.groundTopAt ? World.groundTopAt(s.x,s.z) : 0;
-    const feetClearHere = s.y >= obstTop - 0.25;                 // feet at/above what's here
-    const lowRise = s.y < 0.35;                                  // still basically on the ground
-    const groundGuard = !lowRise || World.spotClear(s.x,s.z,RADIUS*0.5);
-    // CONTIGUITY: a real vault/mantle plan is always a clear corridor (world.js
-    // marchLanding proves it), so the only way a sample fails is a freak case where
-    // something TALLER than the body sits on the path. If that ever happens, latch
-    // `blocked` and stop advancing for the rest of the move — never let a later
-    // far-side sample (clear again past the wall) teleport the body THROUGH it.
-    if(!(feetClearHere && groundGuard)) vault.blocked=true;
+    const overOwnObstacle = obstTop <= vault.top + SLACK;       // our target (or lower) — glide over/onto it
+    const feetClearHere   = s.y   >= obstTop - SLACK;           // risen above whatever stands here
+    const heightOk = overOwnObstacle || feetClearHere;
+    // CONTIGUITY: once anything fails, latch `blocked` so a later far-side sample
+    // (clear again PAST a wall) can never teleport the body THROUGH it.
+    if(!heightOk) vault.blocked=true;
     else if(!vault.blocked){ vault.cx=s.x; vault.cz=s.z; vault.cy=s.y; }
     p.x=vault.cx; p.z=vault.cz;
     // feet at cy → eye at cy+HEIGHT; keep the smoothed eye in sync for after.
@@ -219,61 +234,77 @@ export const Player = (function(){
     UI.toast(`Used ${def.name}`,'pos');
     Events.emit('player:changed');
   }
-  // ---- LOOTABLE-CRATE AIM STENCIL (feat/inventory-ui) ----------------------
-  // When the player AIMS at a lootable crate that's within loot range, draw a
-  // glowing outline on it so it reads as "you can loot this". Fully self-contained
-  // and READ-ONLY w.r.t. world.js: we raycast the camera against the live scene and
-  // recognise an UNOPENED crate body by its signature — a ~1.2m cube box mesh whose
-  // material carries a non-zero emissive (world.js seeds crate bodies that way and
-  // zeroes emissiveIntensity the moment a crate is opened). No world internals are
-  // imported; the outline mesh is our own overlay, added to GFX.world and reused.
-  const LOOT_RANGE=2.6;                 // crate interactable radius (2.4) + a little reach
-  let crateRay=null, outline=null;
-  function isCrateMesh(o){
-    if(!o || !o.isMesh || !o.geometry || !o.material) return false;
-    const g=o.geometry, p=g.parameters;
-    if(!p || g.type!=='BoxGeometry') return false;
-    // crate body = ~1.2m cube (other props are 0.9 cubes / non-cube boxes)
-    const w=p.width||0, h=p.height||0, d=p.depth||0;
-    const cube = Math.abs(w-h)<0.05 && Math.abs(h-d)<0.05;
-    if(!cube || w<1.05 || w>1.4) return false;
-    const m=Array.isArray(o.material)?o.material[0]:o.material;
-    // unopened: an emissive tint that's still lit (opened crates → intensity 0)
-    return !!(m && m.emissive && (m.emissiveIntensity||0) > 0.001);
+  // ---- LOOTABLE PROXIMITY GLOW (feat/interact) -----------------------------
+  // Outline EVERY searchable lootable (crate / locker / safe / med crate / corpse)
+  // that the player is NEAR — proximity-based, not aim-based — so you can see from a
+  // few metres out what's worth walking up to. (PR #39 only lit the one crate you
+  // were precisely aiming at; this lights all nearby ones.) Fully self-contained and
+  // READ-ONLY w.r.t. world.js / loot.js / enemies.js: we classify objects already in
+  // the live scene by signatures THEY set, never importing or mutating their state:
+  //   • CONTAINER — a top-level Group carrying a `.accent` sub-mesh that's still lit
+  //     (loot.js builds every container model with g.accent emissive; opening it sets
+  //     emissiveIntensity=0 — so a glowing accent == an unsearched container). This
+  //     covers ALL container shapes (weapon/med crates, safes, lockers) — no fragile
+  //     cube-size heuristic.
+  //   • CORPSE — a Group whose part meshes carry userData.enemy with .dead===true
+  //     (enemies.js seeds that on every body; makeCorpse registers the loot interact).
+  // Outlines are our OWN overlay LineSegments, POOLED + reused frame-to-frame and
+  // sized to each target's world AABB, so non-cube lockers/bodies box correctly. We
+  // only walk GFX.world's TOP-LEVEL children and only box the ones within range, so
+  // the per-frame cost is a short distance check per scene root — cheap.
+  const PROX_RANGE=4.2;                  // glow radius: container/corpse interact (2.4–2.6) + heads-up reach
+  const _bb=new T.Box3(), _ctr=new T.Vector3(), _sz=new T.Vector3();
+  let outlinePool=[], poolUnit=null;
+  function makeOutline(){
+    if(!poolUnit) poolUnit=new T.EdgesGeometry(new T.BoxGeometry(1,1,1));   // shared unit-cube edges
+    const mat=new T.LineBasicMaterial({ color:0xffd27a, transparent:true, opacity:0.9, depthTest:false });
+    const ls=new T.LineSegments(poolUnit, mat); ls.renderOrder=999; ls.visible=false;
+    try{ GFX.world.add(ls); }catch(_){ }
+    outlinePool.push(ls); return ls;
   }
-  function ensureOutline(){
-    if(!outline){
-      const geo=new T.EdgesGeometry(new T.BoxGeometry(1,1,1));
-      const mat=new T.LineBasicMaterial({ color:0xffd27a, transparent:true, opacity:0.9, depthTest:false });
-      outline=new T.LineSegments(geo, mat); outline.renderOrder=999; outline.visible=false;
+  function getOutline(i){
+    let ls=outlinePool[i] || makeOutline();
+    if(ls.parent!==GFX.world){ try{ GFX.world.add(ls); }catch(_){ } }   // re-attach after a clearWorld()
+    return ls;
+  }
+  // is this top-level scene root a lootable we should highlight? returns true for an
+  // UNSEARCHED container or a dead-enemy corpse; false for everything else.
+  function isLootableRoot(o){
+    if(!o || !o.visible) return false;
+    // container: a glowing accent sub-mesh == not yet searched
+    const acc=o.accent;
+    if(acc && acc.material){ const m=Array.isArray(acc.material)?acc.material[0]:acc.material;
+      if(m && m.emissive && (m.emissiveIntensity||0) > 0.001) return true; }
+    // corpse: any descendant part tagged with a dead enemy
+    let corpse=false;
+    o.traverse(c=>{ if(corpse) return; const ud=c.userData; if(ud && ud.enemy && ud.enemy.dead) corpse=true; });
+    return corpse;
+  }
+  function updateLootGlow(){
+    if(S.mode!==MODE.RAID){ for(const ls of outlinePool) ls.visible=false; return; }
+    const eye=new T.Vector3(); GFX.camera.getWorldPosition(eye);
+    const pulse=0.55 + 0.35*Math.abs(Math.sin(performance.now()*0.005));   // shared gentle pulse
+    let used=0;
+    const roots=GFX.world.children;
+    for(let i=0;i<roots.length;i++){
+      const o=roots[i];
+      if(o.isLineSegments) continue;                                        // never box our own overlay outlines
+      // cheap range gate FIRST (group origin), so we only AABB the handful nearby
+      const ox=o.position?o.position.x:0, oz=o.position?o.position.z:0;
+      const dx=ox-eye.x, dz=oz-eye.z;
+      if(dx*dx+dz*dz > (PROX_RANGE+1.2)*(PROX_RANGE+1.2)) continue;         // far → skip (slack for off-origin pivots)
+      if(!isLootableRoot(o)) continue;
+      // tight world AABB → centre + size, refined distance check against the centre
+      _bb.setFromObject(o); if(_bb.isEmpty()) continue;
+      _bb.getCenter(_ctr); _bb.getSize(_sz);
+      const cdx=_ctr.x-eye.x, cdz=_ctr.z-eye.z;
+      if(cdx*cdx+cdz*cdz > PROX_RANGE*PROX_RANGE) continue;
+      const ls=getOutline(used++);
+      ls.position.copy(_ctr);
+      ls.scale.set(Math.max(_sz.x,0.2)+0.08, Math.max(_sz.y,0.2)+0.08, Math.max(_sz.z,0.2)+0.08);
+      ls.material.opacity=pulse; ls.visible=true;
     }
-    if(outline.parent!==GFX.world){ try{ GFX.world.add(outline); }catch(_){ } }
-    return outline;
-  }
-  function updateCrateAim(){
-    if(S.mode!==MODE.RAID){ if(outline) outline.visible=false; return; }
-    if(!crateRay) crateRay=new T.Raycaster();
-    crateRay.far=LOOT_RANGE+0.6;
-    const cam=GFX.camera, origin=new T.Vector3(), dir=new T.Vector3();
-    cam.getWorldPosition(origin); cam.getWorldDirection(dir);
-    crateRay.set(origin, dir);
-    let hit=null;
-    let list=[]; try{ list=crateRay.intersectObjects(GFX.world.children, true); }catch(_){ list=[]; }
-    // first crate body the ray crosses within loot range (the crate's own thin deco —
-    // corner braces / plank seams — aren't cubes so isCrateMesh skips them). We don't
-    // gate on occlusion: the interactable system itself is distance-only, so matching
-    // it keeps the highlight in lockstep with what you can actually loot.
-    for(const i of list){ if(i.distance>LOOT_RANGE) break; if(isCrateMesh(i.object)){ hit=i; break; } }
-    if(hit){
-      const ol=ensureOutline();
-      const o=hit.object; o.updateWorldMatrix(true,false);
-      const c=new T.Vector3(); o.getWorldPosition(c);
-      const p=o.geometry.parameters, s=(p.width||1.2);
-      ol.position.copy(c); ol.scale.set(s+0.06, s+0.06, s+0.06);
-      // gentle pulse so the highlight reads as "active"
-      ol.material.opacity = 0.55 + 0.35*Math.abs(Math.sin(performance.now()*0.005));
-      ol.visible=true;
-    } else if(outline){ outline.visible=false; }
+    for(let i=used;i<outlinePool.length;i++) outlinePool[i].visible=false;  // hide unused pool entries
   }
   function damage(n, fromPos){
     if(S.mode!==MODE.RAID) return;
@@ -386,7 +417,7 @@ export const Player = (function(){
     // bleed/buff effects are owned by Status.update
     // vignette
     if(vig>0){ vig-=dt; if(vig<=0) document.getElementById('vig').style.opacity='0'; }
-    updateCrateAim();   // outline a lootable crate when aimed at within range
+    updateLootGlow();   // outline ALL nearby lootables (containers + corpses) — proximity, not aim
     Events.emit('player:tick');
   }
   function resetForRaid(){ S.player.health=S.player.maxHealth; S.player.stamina=S.player.maxStamina; Status.clearAll(); Input.crouch=false; vault=null; jumpLatch=false; wallLatch=false; bobT=0; bobX=0; bobY=0; groundY=0; groundCur=0; jumpY=0; velY=0; grounded=true; }

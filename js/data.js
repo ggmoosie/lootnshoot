@@ -183,7 +183,11 @@ DATA.iconId = { ammo_556:'🟡', ammo_9mm:'⚪', ammo_762:'🟠', att_reddot:'�
 
 // ----- default keybinds (rebindable in Settings; persisted in profile.settings). -----
 DATA.binds = { forward:'KeyW', back:'KeyS', left:'KeyA', right:'KeyD', jump:'Space', crouch:'KeyC', sprint:'ShiftLeft',
-  reload:'KeyR', interact:'KeyE', pickup:'KeyF', inventory:'Tab', weapon1:'Digit1', weapon2:'Digit2',
+  // UNIFIED INTERACT/LOOT: one key does interact/search/loot AND pick-up-ground-item
+  // (input.js → World.interactAny, context-sensitive on what's nearest). There is no
+  // separate `pickup` bind — input.js's code() aliases pickup→interact, so world.js's
+  // `Input.code('pickup')` prompt lookup always resolves to the live Interact key.
+  reload:'KeyR', interact:'KeyE', inventory:'Tab', weapon1:'Digit1', weapon2:'Digit2',
   // melee moved off KeyV (it collided with throwCycle, also default KeyV — pressing V
   // fired BOTH a melee swing and a throwable-cycle). Melee now lives on KeyZ.
   // LASER toggle owns KeyT (user request: "T to toggle on/off"); the drone deploy
@@ -195,8 +199,12 @@ DATA.binds = { forward:'KeyW', back:'KeyS', left:'KeyA', right:'KeyD', jump:'Spa
   // to KeyN to avoid clobbering anything.
   hotbar1:'Digit3', hotbar2:'Digit4', hotbar3:'Digit5', hotbar4:'KeyN' };
 DATA.hotbarActions = ['hotbar1','hotbar2','hotbar3','hotbar4'];   // ordered HUD slots
+// NOTE: `pickup` is intentionally ABSENT here — interact/loot and pick-up-item are now
+// ONE keybind ("Interact / Loot"). The Settings rebind list is built from bindLabels, so
+// omitting `pickup` drops the now-redundant separate bind from the UI. (`pickup` still
+// exists in DATA.binds as an alias of `interact` for world.js prompt-key lookups.)
 DATA.bindLabels = { forward:'Move Forward', back:'Move Back', left:'Strafe Left', right:'Strafe Right', jump:'Jump',
-  crouch:'Crouch', sprint:'Sprint', reload:'Reload', interact:'Interact / Loot', pickup:'Pick Up Item',
+  crouch:'Crouch', sprint:'Sprint', reload:'Reload', interact:'Interact / Loot',
   inventory:'Inventory', weapon1:'Primary', weapon2:'Secondary', grenade:'Grenade', heal:'Use Med', drone:'Deploy Drone', firemode:'Fire Mode', melee:'Melee Strike', ammotype:'Cycle Ammo Type', laser:'Toggle Laser',
   hotbar1:'Quick-Use 1', hotbar2:'Quick-Use 2', hotbar3:'Quick-Use 3', hotbar4:'Quick-Use 4' };
 
