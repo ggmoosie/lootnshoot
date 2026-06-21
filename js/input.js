@@ -81,6 +81,16 @@ export const Input = (function(){
       else if(a==='firemode') Weapons.cycleMode();
       else if(a==='laser') Weapons.toggleLaser();
     }
+    // SHOOTING RANGE (hub test-fire): the weapon-handling binds the player needs to
+    // try out a gun — reload, swap primary/secondary, cycle fire mode + ammo type,
+    // toggle the laser. No grenade/heal/drone here (range is a calm test bay).
+    else if(S.rangeActive){
+      if(a==='reload') Weapons.reload();
+      else if(a==='weapon1') Weapons.switchTo('primary');
+      else if(a==='weapon2') Weapons.switchTo('secondary');
+      else if(a==='firemode') Weapons.cycleMode();
+      else if(a==='laser') Weapons.toggleLaser();
+    }
     // UNIFIED INTERACT/LOOT (feat/interact): ONE context-sensitive key does it all —
     // open/search a container, loot a corpse, work a door/station, AND pick up a loose
     // ground item. World.interactAny() fires whatever lootable is NEAREST regardless of
@@ -118,7 +128,10 @@ export const Input = (function(){
   // fire and clear it — but this makes a stuck key impossible either way).
   function clearKeys(){ for(const k in keys) keys[k]=false; st.firing=false; st.ads=false; }
 
-  GFX.dom.addEventListener('mousedown',e=>{ if(e.button===0&&S.mode===MODE.RAID&&st.locked) st.firing=true; if(e.button===2&&S.mode===MODE.RAID) st.ads=true; });
+  // RAID fire/ADS — OR in the safehouse SHOOTING RANGE (S.rangeActive): on the range
+  // firing line the equipped weapon is drawn, so LMB shoots and RMB aims exactly as in
+  // a raid (everything else about the hub is unchanged).
+  GFX.dom.addEventListener('mousedown',e=>{ const combat=S.mode===MODE.RAID||S.rangeActive; if(e.button===0&&combat&&st.locked) st.firing=true; if(e.button===2&&combat) st.ads=true; });
   addEventListener('mouseup',e=>{ if(e.button===0) st.firing=false; if(e.button===2) st.ads=false; });
   // pointerup as a second release path: a mouseup can be swallowed if the button is
   // released over an element (or iframe) that eats the event, or after focus shifts.
@@ -207,15 +220,15 @@ export const Input = (function(){
     hold('bAds', ()=>st.ads=true,  ()=>st.ads=false);
 
     // ---- (3) action ring: reload / jump / crouch / use (nade+med live in the bar) ----
-    tap('bRld', ()=>{ if(S.mode===MODE.RAID) Weapons.reload(); });
+    tap('bRld', ()=>{ if(S.mode===MODE.RAID||S.rangeActive) Weapons.reload(); });
     tap('bUse', ()=>{ World.interactAny(); });
     hold('bJump',()=>{ keys[code('jump')]=true; },()=>{ keys[code('jump')]=false; });
     const crouchBtn=$('bCrouch');
     crouchBtn.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();st.crouch=!st.crouch;crouchBtn.classList.toggle('active',st.crouch);},{passive:false});
 
     // ---- (5) weapon / throwable quick-bar ----
-    const qb={ primary:()=>{ if(S.mode===MODE.RAID) Weapons.switchTo('primary'); },
-               secondary:()=>{ if(S.mode===MODE.RAID) Weapons.switchTo('secondary'); },
+    const qb={ primary:()=>{ if(S.mode===MODE.RAID||S.rangeActive) Weapons.switchTo('primary'); },
+               secondary:()=>{ if(S.mode===MODE.RAID||S.rangeActive) Weapons.switchTo('secondary'); },
                nade:()=>{ if(S.mode===MODE.RAID) Weapons.throwGrenade(); },
                med:()=>{ if(S.mode===MODE.RAID) Player.useMed(); } };
     document.querySelectorAll('#quickbar .qslot').forEach(slot=>{
@@ -225,7 +238,7 @@ export const Input = (function(){
 
     // ---- top-right utility: fire-mode, bag (sprint is folded into the stick) ----
     const modeBtn=$('bMode');
-    modeBtn.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();if(S.mode===MODE.RAID){Weapons.cycleMode();const w=Weapons.activeItem();if(w)modeBtn.textContent=Weapons.modeOf(w).toUpperCase();}},{passive:false});
+    modeBtn.addEventListener('touchstart',e=>{e.preventDefault();e.stopPropagation();if(S.mode===MODE.RAID||S.rangeActive){Weapons.cycleMode();const w=Weapons.activeItem();if(w)modeBtn.textContent=Weapons.modeOf(w).toUpperCase();}},{passive:false});
     tap('bInv',()=>{ if(S.mode===MODE.HUB||S.mode===MODE.RAID) UI.toggleInventory(); });
   })();
 

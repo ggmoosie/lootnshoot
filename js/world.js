@@ -26,6 +26,14 @@ export const World = (function(){
   let colliders=[], solids=[], interactables=[], doors=[], mapBoxes=[];
   let extractPos=null, extractMesh=null, extractHold=0;
   let hostage=null, bomb=null;   // objective actors (rescue NPC / defuse device)
+  // ---- SHOOTING RANGE (safehouse test-fire) -------------------------------
+  // Built only in the hub (buildRange, called from buildHub). `rangeTargets` are the
+  // reactive popper targets (the static backstop plates need no per-frame state).
+  // `rangeLine` is the firing-line trigger volume (XZ rect); standing in it with the
+  // gun drawn arms test-fire (S.rangeActive). `rangeScore` is the live hit counter
+  // shown in the objective panel while armed. All reset() to empty so re-entering the
+  // hub rebuilds a clean range and never leaks the previous one's meshes/state.
+  let rangeTargets=[], rangeLine=null, rangeScore=0, rangeArmed=false;
 
   // ---- SHARED RESOURCE CACHES (draw-call / GPU budget) ---------------------
   // A raid arena is MANY buildings. Each building is now built from dozens of
@@ -74,7 +82,7 @@ export const World = (function(){
   }
   function reserveFootprint(cx,cz,w,d){ footprints.push({minX:cx-w/2,maxX:cx+w/2,minZ:cz-d/2,maxZ:cz+d/2}); }
 
-  function reset(){ GFX.clearWorld(); colliders=[]; solids=[]; interactables=[]; doors=[]; mapBoxes=[]; footprints=[]; extractPos=null; extractMesh=null; extractHold=0; hostage=null; bomb=null; matCache=new Map(); geoCache=new Map(); Enemies.clear(); Loot.clear(); Projectiles.clear(); Harvest.clear(); Allies.clear(); FX.clear(); }
+  function reset(){ disarmRange(); GFX.clearWorld(); colliders=[]; solids=[]; interactables=[]; doors=[]; mapBoxes=[]; footprints=[]; extractPos=null; extractMesh=null; extractHold=0; hostage=null; bomb=null; rangeTargets=[]; rangeLine=null; rangeScore=0; matCache=new Map(); geoCache=new Map(); Enemies.clear(); Loot.clear(); Projectiles.clear(); Harvest.clear(); Allies.clear(); FX.clear(); }
   function addBox(x,z,w,d,h,color,opt={}){
     // Geometry + material are SHARED via the caches above unless the caller needs
     // to mutate this mesh's material later (opt.uniqueMat → fresh material, e.g.
@@ -804,7 +812,12 @@ export const World = (function(){
   function buildHub(){
     reset(); addLights(0x4a5a6a,0xfff0d8,1.7); GFX.scene.fog=new T.Fog(0x1a2028,55,170); addGround(120,0x2a2f35);
     const wc=0x363b41;
-    addBox(0,-16,40,1,6,wc); addBox(-20,0,1,32,6,wc); addBox(20,0,1,32,6,wc);
+    addBox(0,-16,40,1,6,wc);
+    // LEFT (-X) hub wall: punch a doorway gap near z=+10 so the player can walk OUT to
+    // the attached SHOOTING RANGE room (built beyond this wall). The wall runs along Z
+    // at x=-20 from z=-16..16 (length 32, centre z=0); wallWithGap leaves the rest solid.
+    wallWithGap('z', 0, 32, -20, 6, wc, 10, 3.0);
+    addBox(20,0,1,32,6,wc);
     addBox(-12,16,16,1,6,wc); addBox(12,16,16,1,6,wc);
     addBox(0,0,38,30,.2,0x202529,{collide:false});
     // stations
@@ -812,6 +825,7 @@ export const World = (function(){
     station(-15,-8,'printer','craft',0x6fa8dc, 'use 3D printer · craft');
     station(15,-8,'vendor','vendor',0x57c06b, 'open vendor');
     station(15,6,'stash','inventory',0xc06fd8, 'open stash · gear');
+    buildRange();
     buildTrain(0,19);
     interactables.push({pos:new T.Vector3(0,1,16), radius:4.5, label:'board train · deploy', action:()=>Raid.openDeploy()});
     Player.spawn(0,0,Math.PI);
@@ -837,6 +851,166 @@ export const World = (function(){
     const car=new T.Mesh(new T.BoxGeometry(6,4,14), new T.MeshStandardMaterial({color:0x3a4148,roughness:.5,metalness:.6})); car.position.set(x,2,z+4); car.castShadow=true; GFX.world.add(car);
     colliders.push({minX:x-3,maxX:x+3,minZ:z+4-7,maxZ:z+4+7}); solids.push(car);
     const stripe=new T.Mesh(new T.BoxGeometry(6.05,.6,14.05), new T.MeshStandardMaterial({color:0xe8a33d,emissive:0xe8a33d,emissiveIntensity:.25})); stripe.position.set(x,2.6,z+4); GFX.world.add(stripe);
+  }
+
+  // ---------- SHOOTING RANGE (safehouse test-fire) ----------
+  // A walled-off lane ATTACHED to the hub (out the left-wall doorway, on -X), so the
+  // player can test-fire their EQUIPPED weapon between raids without disturbing the
+  // rest of the safehouse. The lane runs along -X away from a firing line; static
+  // steel backstop plates sit at three distances + a couple of reactive POPPERS that
+  // flash + fall when hit and self-reset. Targets are real WORLD SOLIDS tagged with
+  // userData.rangeTarget, so the EXISTING weapon hitscan (Weapons.fire raycasts
+  // World.solids) registers on them with zero changes to the fire/hit code — the only
+  // hook is fire() routing a tagged-mesh hit to World.rangeHit() for the reaction +
+  // score. Stepping onto the firing line arms test-fire (S.rangeActive); stepping off
+  // disarms it. Everything here is hub-only and reset() clears it.
+  //
+  // Geometry frame (world XZ): the room spans x ∈ [-48,-22], z ∈ [-9,13]. The doorway
+  // in the hub's -X wall (x=-20) is at world z=10; the room's +X wall (x=-22) carries a
+  // MATCHING gap at z=10, with a short vestibule bridging the 2u gap between them. The
+  // firing line is at x≈-24 (just inside the room, by the door); the player faces -X
+  // (down the lane) to shoot. Targets march away from x=-30 to x=-45.
+  function buildRange(){
+    const rc=0x2e343b, trim=0x3c444d, floorCol=0x242a30;
+    const minX=-48, maxX=-22, minZ=-9, maxZ=13, h=6;
+    const cx=(minX+maxX)/2, cz=(minZ+maxZ)/2, lenX=maxX-minX, lenZ=maxZ-minZ;
+    const doorZ=10;                                            // doorway centre, aligned to the hub gap
+    // floor slab (visual only) for the lane + a short vestibule bridging the doorway
+    addBox(cx, cz, lenX, lenZ, .2, floorCol, {collide:false});
+    addBox(-21, doorZ, 4, 4, .2, floorCol, {collide:false});  // doorway vestibule floor (x -23..-19)
+    // four walls of the range room. The +X (hub-side) wall gets a gap aligned to the
+    // hub doorway (world z=10) so the two rooms connect; the other three are solid.
+    addBox(cx, minZ, lenX, 1, h, rc);                          // far -Z wall
+    addBox(cx, maxZ, lenX, 1, h, rc);                          // near +Z wall
+    addBox(minX, cz, 1, lenZ, h, rc);                          // back wall (the deep end / backstop wall)
+    wallWithGap('z', cz, lenZ, maxX, h, rc, doorZ-cz, 3.2);    // +X wall (toward hub) with the connecting gap
+    // a roof slab so stray rounds don't fly out the top (visual + LOS cap; thin so it
+    // never reads as AI cover — it's the hub anyway).
+    addBox(cx, cz, lenX+0.4, lenZ+0.4, .25, rc, {collide:false, baseY:h, rough:.95});
+    // FIRING LINE: a bright accent strip on the floor the player stands on to arm
+    // test-fire. Visual only; the trigger volume is the rangeLine rect below.
+    const lineZc=1, lineZlen=14;                               // strip spans z ∈ [-6,8]
+    const lineMesh=new T.Mesh(new T.BoxGeometry(.4,.06,lineZlen),
+      new T.MeshStandardMaterial({color:0xe8a33d,emissive:0xe8a33d,emissiveIntensity:.5}));
+    lineMesh.position.set(-24,0.05,lineZc); GFX.world.add(lineMesh);
+    // a small bench/counter at each end of the firing line for flavor (collidable cover)
+    addBox(-24, -5, 1.2, 1.6, 1.0, trim, {metal:.4, rough:.5});
+    addBox(-24,  7, 1.2, 1.6, 1.0, trim, {metal:.4, rough:.5});
+    // distance markers down the -X lane (faint trim bands on the floor) so distances
+    // read at a glance — purely visual.
+    for(const mx of [-30,-36,-42]){
+      const band=new T.Mesh(new T.BoxGeometry(.3,.04,lenZ-3),
+        new T.MeshStandardMaterial({color:trim,roughness:.8})); band.position.set(mx,0.03,cz); GFX.world.add(band);
+    }
+    // the firing-line trigger volume (XZ rect). Standing inside it (in the hub) arms
+    // test-fire; leaving it disarms. A little forgiving so you don't fall off the line.
+    rangeLine={ minX:-27, maxX:-22.5, minZ:lineZc-7, maxZ:lineZc+7 };
+    // ---- STATIC steel backstop plates at varied distances (no per-frame state) ----
+    // Plain solids tagged rangeTarget: the hitscan sparks on them + scores a hit; they
+    // don't move, so they're a clean point-of-aim / grouping reference at known range.
+    staticTarget(-30, -3, 1.6, 2.0);   // near
+    staticTarget(-36,  4, 1.4, 1.8);   // mid
+    staticTarget(-42, -2, 1.2, 1.6);   // far (smaller = harder)
+    staticTarget(-44,  5, 1.0, 1.4);   // far corner
+    // ---- REACTIVE POPPERS: flash + fall flat when hit, auto-stand after a beat ----
+    makePopper(-33,  7);
+    makePopper(-39, -6);
+    makePopper(-45,  1);
+  }
+  // a static steel plate facing the firing line (+X). `w`/`h` = plate size; sits on a
+  // short post. Tagged userData.rangeTarget so the weapon hitscan scores on it.
+  function staticTarget(x,z,w,ht){
+    const post=new T.Mesh(new T.BoxGeometry(.12,1.0,.12), new T.MeshStandardMaterial({color:0x3a3f45,roughness:.8}));
+    post.position.set(x,0.5,z); post.castShadow=true; GFX.world.add(post); solids.push(post);
+    const plate=new T.Mesh(new T.BoxGeometry(.12,ht,w),
+      new T.MeshStandardMaterial({color:0xb7c0c8,metalness:.5,roughness:.45}));
+    plate.position.set(x,1.0+ht/2,z); plate.castShadow=true; GFX.world.add(plate);
+    plate.userData.rangeTarget={ kind:'static', baseCol:0xb7c0c8 };
+    solids.push(plate);
+    rangeTargets.push({ mesh:plate, kind:'static', flash:0 });
+  }
+  // a reactive popper: a round red disc on a pivot that FALLS FLAT (rotates down) and
+  // FLASHES when hit, then auto-stands back up after a short delay. Tagged so the
+  // hitscan scores it; the fall/flash/reset are driven in updateRange().
+  function makePopper(x,z){
+    const pivot=new T.Group(); pivot.position.set(x,0.2,z); GFX.world.add(pivot);
+    const stand=new T.Mesh(new T.BoxGeometry(.1,.4,.1), new T.MeshStandardMaterial({color:0x3a3f45,roughness:.8}));
+    stand.position.set(0,0.2,0); pivot.add(stand);
+    // a vertical disc: the cylinder's flat circular faces sit at ±X (toward the firing
+    // line) by laying its local +Y axis along world X via rotation.z. The PIVOT tips
+    // about its Z axis to drop the disc flat when hit (see updateRange).
+    const disc=new T.Mesh(new T.CylinderGeometry(.55,.55,.12,20),
+      new T.MeshStandardMaterial({color:0xd84b3c,metalness:.3,roughness:.5,emissive:0x000000}));
+    disc.rotation.z=Math.PI/2;             // stand it up as a vertical disc facing ±X
+    disc.position.set(0,0.9,0); disc.castShadow=true; pivot.add(disc);
+    disc.userData.rangeTarget={ kind:'popper' };
+    solids.push(disc);
+    const tgt={ mesh:disc, pivot, kind:'popper', down:false, downT:0, flash:0, baseCol:0xd84b3c };
+    disc.userData.rangeTarget.tgt=tgt;
+    rangeTargets.push(tgt);
+  }
+  // arm / disarm safehouse test-fire. Arming draws the equipped weapon + swaps the
+  // objective readout to a live hit counter; disarming holsters + restores it.
+  function armRange(){
+    if(rangeArmed || S.mode!==MODE.HUB) return;
+    rangeArmed=true; S.rangeActive=true; rangeScore=0;
+    Weapons.draw();
+    setRangeObjective();
+    UI.banner('SHOOTING RANGE','Test-fire your equipped weapon · ammo is free'); Audio.play('equip');
+  }
+  function disarmRange(){
+    if(!rangeArmed){ S.rangeActive=false; return; }
+    rangeArmed=false; S.rangeActive=false;
+    try{ Weapons.holster(); }catch(e){}
+    // restore the normal safehouse objective line (no-op if UI isn't ready, e.g. boot reset)
+    try{ UI.setObjective('Safehouse','Gear up, craft, trade, then board the train.','SAFEHOUSE'); }catch(e){}
+  }
+  function setRangeObjective(){
+    try{ UI.setObjective('Shooting Range','Hits: '+rangeScore+'  ·  step off the line to stop.','RANGE'); }catch(e){}
+  }
+  // a tagged target took a hit: score it, react (popper flash + fall), update the HUD.
+  // Called from Weapons.fire() when its hitscan strikes a userData.rangeTarget mesh.
+  function rangeHit(obj, point){
+    if(!S.rangeActive) return;
+    const meta=obj&&obj.userData&&obj.userData.rangeTarget; if(!meta) return;
+    if(meta.kind==='popper' && meta.tgt){
+      if(meta.tgt.down) return;            // already knocked down → ignore until it stands again
+      meta.tgt.down=true; meta.tgt.downT=0; meta.tgt.flash=1;
+    } else {
+      // static plate: a quick flash ping
+      const t=rangeTargets.find(r=>r.mesh===obj); if(t) t.flash=1;
+    }
+    rangeScore++; Audio.play('pickup',point);
+    setRangeObjective();
+  }
+  // per-frame range upkeep (runs in the hub from World.update): arm/disarm by the
+  // firing-line trigger, and animate popper fall/flash/auto-reset.
+  function updateRange(dt){
+    if(rangeTargets.length===0 && !rangeArmed) return;   // no range built (e.g. raid)
+    // arm/disarm based on whether the player stands on the firing line
+    if(rangeLine){
+      const p=GFX.yaw.position;
+      const onLine = p.x>=rangeLine.minX && p.x<=rangeLine.maxX && p.z>=rangeLine.minZ && p.z<=rangeLine.maxZ;
+      if(onLine && !rangeArmed) armRange();
+      else if(!onLine && rangeArmed) disarmRange();
+    }
+    // animate targets: popper fall/stand + flash fade
+    for(const t of rangeTargets){
+      if(t.flash>0){ t.flash=Math.max(0, t.flash-dt*3);
+        const em = t.kind==='popper'?0xffd27a:0xfff0c0;
+        const mat=t.mesh.material;
+        if(mat&&mat.emissive){
+          if(t.flash>0){ mat.emissive.setHex(em); mat.emissiveIntensity=t.flash*1.2; }
+          else { mat.emissive.setHex(0x000000); mat.emissiveIntensity=0; }   // flash done → clear the glow
+        } }
+      if(t.kind==='popper'){
+        // target rotation: 0 = standing, -PI/2 ≈ fallen flat (about the +Z pivot axis)
+        const want = t.down ? -Math.PI/2 : 0;
+        t.pivot.rotation.z += (want - t.pivot.rotation.z)*Math.min(1,dt*10);
+        if(t.down){ t.downT+=dt; if(t.downT>=1.6){ t.down=false; t.flash=0;
+          if(t.mesh.material&&t.mesh.material.emissive){ t.mesh.material.emissive.setHex(0x000000); t.mesh.material.emissiveIntensity=0; } } }
+      }
+    }
   }
 
   // ---------- RAID LAYOUTS (world variety) ----------
@@ -1096,6 +1270,9 @@ export const World = (function(){
     // defuse device: show a hold prompt with the live progress % (driven in update)
     if(near && near.defuse){ const f=Math.round(Objectives.defuseFrac()*100); UI.prompt(`Hold <b>${ek}</b> · defuse device ${f>0?'('+f+'%)':''}`); return; }
     if(near){ const kl=keyName((near.key||'interact')==='pickup'?Input.code('pickup'):Input.code('interact')); UI.prompt(`<b>${kl}</b> · ${near.label}`); }
+    // SHOOTING RANGE: while armed on the firing line, show a fire/aim hint instead of a
+    // blank prompt so the test-fire controls are discoverable.
+    else if(rangeArmed){ UI.prompt('RANGE · <b>LMB</b> fire · <b>RMB</b> aim · step off to stop'); }
     else UI.prompt(null);
   }
   // hostage escort: a freed hostage trails the player at a short offset (2D, using
@@ -1122,6 +1299,9 @@ export const World = (function(){
   }
   function update(dt){
     updateInteract();
+    // safehouse shooting range upkeep runs in the HUB (arm/disarm by firing line +
+    // popper animations). No-op in a raid (no range built) and after the early return.
+    if(S.mode===MODE.HUB) updateRange(dt);
     if(S.mode!==MODE.RAID){ return; }
     Objectives.tick(dt);
     updateHostage(dt);
@@ -1136,6 +1316,6 @@ export const World = (function(){
     if(extractPos){ extractMesh.rotation.y+=dt; const d=Math.hypot(p.x-extractPos.x,p.z-extractPos.z);
       if(d<3 && Objectives.canExtract() && Input.keys[Input.code('interact')]){ extractHold+=dt; if(extractHold>=2) Raid.openExtractChoice(); } else extractHold=0; }
   }
-  return { reset, buildHub, buildRaid, moveActor, vaultProbe, spotClear, groundTopAt, findSafeSpawn, interact, interactAny, update, addInteract:(o)=>interactables.push(o),
+  return { reset, buildHub, buildRaid, moveActor, vaultProbe, spotClear, groundTopAt, findSafeSpawn, interact, interactAny, update, rangeHit, addInteract:(o)=>interactables.push(o),
            mapInfo:()=>({boxes:mapBoxes, extract:extractPos?{x:extractPos.x,z:extractPos.z}:null, size:74}), get solids(){return solids;} };
 })();

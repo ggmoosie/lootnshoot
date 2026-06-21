@@ -26,6 +26,14 @@ export const S = {
   profile: null,           // built by Save.newProfile / Save.load
   run: null,               // built by Raid.deploy
   player: { health:100, maxHealth:100, stamina:100, maxStamina:100, ads:false, activeSlot:'primary' },
+  // SHOOTING RANGE (safehouse test-fire): a hub-only flag. When true the player is
+  // stood on the safehouse range firing line with their weapon drawn — the input +
+  // weapon systems treat this like a RAID for the narrow purpose of drawing/aiming/
+  // firing (so you can test-fire the equipped gun between raids), but NOTHING ELSE
+  // about the hub changes: S.mode stays MODE.HUB, no enemies, no loot, no extract.
+  // Ammo is free here (raid reserves are never spent). World owns the lane/targets
+  // and flips this on/off when you step onto / off the firing line.
+  rangeActive: false,
   setMode(m){ S.mode=m; Events.emit('mode',m); },
 };
 
