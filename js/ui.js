@@ -319,7 +319,15 @@ export const UI = (function(){
     let h=`<div class="col"><div class="colT"><span>${label}</span><span class="cap">${grid.w}×${grid.h}</span></div><div class="gridscroll"><div class="grid" data-gk="${gk}" style="width:${grid.w*CELL}px;height:${grid.h*CELL}px">`;
     for(let y=0;y<grid.h;y++)for(let x=0;x<grid.w;x++) h+=`<div class="cell" style="left:${x*CELL}px;top:${y*CELL}px;width:${CELL}px;height:${CELL}px"></div>`;
     for(const it of grid.items){ const w=(it.rot?it.def.size[1]:it.def.size[0])*CELL, hh=(it.rot?it.def.size[0]:it.def.size[1])*CELL; const small=it.def.size[0]===1&&it.def.size[1]===1;
-      h+=`<div class="gi r-${it.def.rarity||1}${small?' small':''}" data-uid="${it.uid}" style="left:${it.x*CELL}px;top:${it.y*CELL}px;width:${w}px;height:${hh}px"><span class="ic">${iconHTML(it.def)}</span><span class="nm">${Inventory.itemName(it)}</span>${it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
+      // Rotated items: the .gi footprint swaps W↔H, but the icon art is drawn for the
+      // unrotated item. Size the .ic to the UNROTATED footprint and spin it 90° about
+      // its centre — rotation about centre turns a (w0×h0) box into exactly the rotated
+      // (h0×w0) footprint, so the icon keeps its native aspect ratio and fills the cells
+      // sideways (e.g. a horizontal rifle reads vertical when rotated). 1×1 items are
+      // square, so the rotation is a no-op for them — harmless.
+      const w0=it.def.size[0]*CELL, h0=it.def.size[1]*CELL;
+      const icStyle = it.rot ? ` style="inset:auto;left:50%;top:50%;width:${w0}px;height:${h0}px;transform:translate(-50%,-50%) rotate(90deg)"` : '';
+      h+=`<div class="gi r-${it.def.rarity||1}${small?' small':''}${it.rot?' rot':''}" data-uid="${it.uid}" style="left:${it.x*CELL}px;top:${it.y*CELL}px;width:${w}px;height:${hh}px"><span class="ic"${icStyle}>${iconHTML(it.def)}</span><span class="nm">${Inventory.itemName(it)}</span>${it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
     h+=`</div></div></div>`; return h;
   }
   // slotHTML(slot, item, corpse?) — one paper-doll slot. For the player (corpse=false)
@@ -708,7 +716,10 @@ export const UI = (function(){
     else if(def.type==='attachment') Inventory.installAttachment(uid);
     else if(loot) quickMove(uid);
     renderInventory(); refreshHUD(); }
-  function sizeGhost(){ if(!drag) return; const w=(drag.rot?drag.def.size[1]:drag.def.size[0])*CELL, h=(drag.rot?drag.def.size[0]:drag.def.size[1])*CELL; const g=$('dragGhost'); g.style.width=w+'px'; g.style.height=h+'px'; }
+  function sizeGhost(){ if(!drag) return; const w=(drag.rot?drag.def.size[1]:drag.def.size[0])*CELL, h=(drag.rot?drag.def.size[0]:drag.def.size[1])*CELL; const g=$('dragGhost'); g.style.width=w+'px'; g.style.height=h+'px';
+    // spin the ghost's icon to match the rotated footprint (mirrors the placed-item
+    // render in gridHTML) so the live drag preview reads the same way after pressing R.
+    const ic=g.querySelector('.itemicon'); if(ic) ic.style.transform = drag.rot ? 'rotate(90deg)' : ''; }
   function moveGhost(x,y){ const g=$('dragGhost'); g.style.left=(x-g.offsetWidth/2)+'px'; g.style.top=(y-g.offsetHeight/2)+'px'; }
   function gridUnder(x,y){ let el=document.elementFromPoint(x,y); while(el && !(el.classList&&el.classList.contains('grid'))) el=el.parentElement; return el; }
   function slotUnder(x,y){ let el=document.elementFromPoint(x,y); while(el && !(el.dataset&&el.dataset.slot)) el=el.parentElement; return el; }
