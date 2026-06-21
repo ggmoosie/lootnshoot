@@ -25,9 +25,13 @@ DATA.items = {
   // them, right-click to open, and pack loose loot inside. Looted from the world or
   // bought; they organise the stash and carry as a unit. type:'case' is non-equippable
   // (slotFor returns null) so a case is only ever a grid you open, never gear. -----
-  case_ammo:{name:'Ammo Case', type:'case', grid:[4,4], size:[2,2], value:700, rarity:3},
+  // `accepts` (optional) restricts a typed case to a whitelist of item TYPES — only
+  // those go in (drag/drop + quick-stow enforce it). Omit `accepts` (e.g. the Item
+  // Case) = a general container that takes anything. Ammo Case → ammo; Document Case
+  // → keys / intel / valuables (the "paperwork & loot tickets" a doc case is for).
+  case_ammo:{name:'Ammo Case', type:'case', grid:[4,4], size:[2,2], value:700, rarity:3, accepts:['ammo']},
   case_item:{name:'Item Case', type:'case', grid:[5,5], size:[2,3], value:1500, rarity:4},
-  case_doc:{name:'Document Case', type:'case', grid:[3,2], size:[1,2], value:500, rarity:3},
+  case_doc:{name:'Document Case', type:'case', grid:[3,2], size:[1,2], value:500, rarity:3, accepts:['key','intel','valuable']},
   med_bandage:{name:'Bandage', type:'med', heal:25, cure:'bleed', size:[1,1], stack:6, value:40, rarity:1},
   med_kit:{name:'Med Kit', type:'med', heal:80, cure:'bleed', size:[1,2], value:220, rarity:2},
   stim:{name:'Combat Stim', type:'med', heal:15, buff:'speed', size:[1,1], value:300, rarity:3},
@@ -184,10 +188,17 @@ DATA.binds = { forward:'KeyW', back:'KeyS', left:'KeyA', right:'KeyD', jump:'Spa
   // fired BOTH a melee swing and a throwable-cycle). Melee now lives on KeyZ.
   // LASER toggle owns KeyT (user request: "T to toggle on/off"); the drone deploy
   // moved off T to KeyU so both features keep a default bind (rebindable in Settings).
-  grenade:'KeyG', heal:'KeyH', drone:'KeyU', firemode:'KeyB', melee:'KeyZ', ammotype:'KeyX', laser:'KeyT' };
+  grenade:'KeyG', heal:'KeyH', drone:'KeyU', firemode:'KeyB', melee:'KeyZ', ammotype:'KeyX', laser:'KeyT',
+  // CONSUMABLES HOTBAR — Tarkov-style quick-use slots (rebindable in Settings). Each
+  // key fast-uses the consumable in that HUD slot (uses ONE, decrements the stack).
+  // Digit3..5 are free (Digit1/2 are weapon swap); 4 slots, 4th defaults unbound-ish
+  // to KeyN to avoid clobbering anything.
+  hotbar1:'Digit3', hotbar2:'Digit4', hotbar3:'Digit5', hotbar4:'KeyN' };
+DATA.hotbarActions = ['hotbar1','hotbar2','hotbar3','hotbar4'];   // ordered HUD slots
 DATA.bindLabels = { forward:'Move Forward', back:'Move Back', left:'Strafe Left', right:'Strafe Right', jump:'Jump',
   crouch:'Crouch', sprint:'Sprint', reload:'Reload', interact:'Interact / Loot', pickup:'Pick Up Item',
-  inventory:'Inventory', weapon1:'Primary', weapon2:'Secondary', grenade:'Grenade', heal:'Use Med', drone:'Deploy Drone', firemode:'Fire Mode', melee:'Melee Strike', ammotype:'Cycle Ammo Type', laser:'Toggle Laser' };
+  inventory:'Inventory', weapon1:'Primary', weapon2:'Secondary', grenade:'Grenade', heal:'Use Med', drone:'Deploy Drone', firemode:'Fire Mode', melee:'Melee Strike', ammotype:'Cycle Ammo Type', laser:'Toggle Laser',
+  hotbar1:'Quick-Use 1', hotbar2:'Quick-Use 2', hotbar3:'Quick-Use 3', hotbar4:'Quick-Use 4' };
 
 // ----- raid stops: difficulty curve by stopIndex. -----
 DATA.stops = {
@@ -318,6 +329,23 @@ DATA.gear = {
   clo_ghillie:{name:'Ghillie Suit',  type:'clothing', slot:'clothing', ac:0, dr:0.02, ergo:-0.05, stealth:0.25, size:[2,3], value:700, rarity:4},
 };
 for(const k in DATA.gear){ DATA.gear[k].id=k; DATA.items[k]=DATA.gear[k]; } // merge into the item registry
+
+// clothing COLORWAYS — each clothing item rolls a random colour at creation so it
+// reads as "Blue Shirt", "Black Jacket", etc. (name prefix + tint on the 3D model).
+// `name` is the adjective shown in the item label; `hex` tints the mannequin mesh.
+// Kept here in data so the palette is tunable; inventory.js rolls one per instance.
+DATA.clothingColors = [
+  {name:'Black',  hex:0x232629},
+  {name:'Blue',   hex:0x2f5fae},
+  {name:'Navy',   hex:0x1d2b46},
+  {name:'Olive',  hex:0x556b2f},
+  {name:'Tan',    hex:0xb09a6b},
+  {name:'Grey',   hex:0x6a6f73},
+  {name:'Green',  hex:0x3f6f43},
+  {name:'Red',    hex:0x9c3a33},
+  {name:'White',  hex:0xcfd2cf},
+  {name:'Brown',  hex:0x5a4632},
+];
 
 // gear icons (per-type fallback for the new 'clothing' type + per-id stand-ins)
 DATA.iconType.clothing = '👕';

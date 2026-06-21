@@ -17,7 +17,6 @@ import { Crafting } from "./crafting.js";
 import { Enemies } from "./enemies.js";
 import { Allies } from "./allies.js";
 import { Player } from "./player.js";
-import { Status } from "./status.js";
 import { Loot } from "./loot.js";
 import { Audio } from "./audio.js";
 import { Raid } from "./raid.js";
@@ -63,6 +62,7 @@ export const UI = (function(){
     document.querySelectorAll('.wslot').forEach(s=>s.classList.toggle('on', s.dataset.s===pl.activeSlot));
     $('cr').textContent=pr.credits; $('lvl').textContent=`LVL ${pr.level}`;
     $('nade').textContent = S.mode===MODE.RAID? throwLine():'';
+    refreshConbar();
     if(Input.isTouch) refreshTouchHUD(pl,pr);
   }
   // mobile-only HUD: kills/alive readout + the weapon/throwable quick-bar.
@@ -84,6 +84,46 @@ export const UI = (function(){
     if(nMed){ const m=medCount(); nMed.querySelector('.qa').textContent=m; nMed.classList.toggle('empty',!inRaid||m<=0); }
   }
   function medCount(){ let n=0; for(const g of Inventory.carried()) for(const t of g.items) if(t.def.type==='med') n+=t.qty; return n; }
+
+  // ---------- CONSUMABLES HOTBAR (Tarkov-style quick-use) ----------
+  // The hotbar shows the DISTINCT consumable types you carry (raid: rig+pack; hub:
+  // stash), one per slot, capped to the bound slot count. Pressing the bound key
+  // (DATA.hotbarActions → DATA.binds) uses ONE of that type via Player.useConsumable.
+  // Slots are stable (sorted by name) so a given item keeps its key between refreshes.
+  function consumableGrids(){ return S.mode===MODE.RAID ? Inventory.carried() : [Inventory.stash()]; }
+  function hotbarItems(){
+    const byId=new Map();
+    for(const g of consumableGrids()) for(const t of g.items){
+      if(!Player.isConsumable(t.def)) continue;
+      const e=byId.get(t.def.id); if(e){ e.qty+=t.qty; } else byId.set(t.def.id, {def:t.def, qty:t.qty, uid:t.uid}); }
+    const list=[...byId.values()].sort((a,b)=>a.def.name.localeCompare(b.def.name));
+    return list.slice(0, DATA.hotbarActions.length);
+  }
+  // use the consumable in HUD slot `i` (0-based): finds a current instance of that
+  // slot's def and uses ONE. Returns true if a use started.
+  function useHotbarSlot(i){
+    if(S.mode!==MODE.RAID && S.mode!==MODE.HUB) return false;
+    const slots=hotbarItems(); const slot=slots[i]; if(!slot){ return false; }
+    // re-locate a live instance of this def (the cached uid may have been consumed)
+    for(const g of consumableGrids()){ const t=g.items.find(x=>x.def.id===slot.def.id); if(t) return Player.useConsumable(t.uid); }
+    return false;
+  }
+  function refreshConbar(){
+    const el=$('conbar'); if(!el) return;
+    if(Input.isTouch){ el.style.display='none'; return; }   // mobile uses the touch quick-bar
+    const playing = S.mode===MODE.RAID || S.mode===MODE.HUB;
+    const slots=hotbarItems();
+    if(!playing || !slots.length){ el.style.display='none'; el.innerHTML=''; return; }
+    el.style.display='flex';
+    el.innerHTML=slots.map((s,i)=>{
+      const key=keyName(Input.code(DATA.hotbarActions[i])||'');
+      return `<div class="conslot" data-hot="${i}" title="${s.def.name}">
+        <span class="conkey">${key}</span>
+        <span class="conic">${iconHTML(s.def)}</span>
+        <span class="conq">${s.qty}</span></div>`;
+    }).join('');
+    el.querySelectorAll('[data-hot]').forEach(b=>b.onclick=()=>{ if(useHotbarSlot(b.dataset.hot*1)){ Audio.play('ui'); refreshHUD(); } });
+  }
   function reserveOf(st){ if(!st) return 0; const grids=S.mode===MODE.RAID?Inventory.carried():[Inventory.stash()]; let n=0; for(const g of grids) for(const t of g.items) if(t.def.type==='ammo'&&t.def.cal===st.cal) n+=t.qty; return n; }
   function nadeCount(){ let n=0; for(const g of Inventory.carried()) n+=g.count('nade_frag'); return n; }
   // HUD throwable readout: frags (G / quickbar) + the currently-selected throwable
@@ -279,7 +319,7 @@ export const UI = (function(){
     let h=`<div class="col"><div class="colT"><span>${label}</span><span class="cap">${grid.w}×${grid.h}</span></div><div class="gridscroll"><div class="grid" data-gk="${gk}" style="width:${grid.w*CELL}px;height:${grid.h*CELL}px">`;
     for(let y=0;y<grid.h;y++)for(let x=0;x<grid.w;x++) h+=`<div class="cell" style="left:${x*CELL}px;top:${y*CELL}px;width:${CELL}px;height:${CELL}px"></div>`;
     for(const it of grid.items){ const w=(it.rot?it.def.size[1]:it.def.size[0])*CELL, hh=(it.rot?it.def.size[0]:it.def.size[1])*CELL; const small=it.def.size[0]===1&&it.def.size[1]===1;
-      h+=`<div class="gi r-${it.def.rarity||1}${small?' small':''}" data-uid="${it.uid}" style="left:${it.x*CELL}px;top:${it.y*CELL}px;width:${w}px;height:${hh}px"><span class="ic">${iconHTML(it.def)}</span><span class="nm">${it.def.name}</span>${it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
+      h+=`<div class="gi r-${it.def.rarity||1}${small?' small':''}" data-uid="${it.uid}" style="left:${it.x*CELL}px;top:${it.y*CELL}px;width:${w}px;height:${hh}px"><span class="ic">${iconHTML(it.def)}</span><span class="nm">${Inventory.itemName(it)}</span>${it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
     h+=`</div></div></div>`; return h;
   }
   // slotHTML(slot, item, corpse?) — one paper-doll slot. For the player (corpse=false)
@@ -664,7 +704,7 @@ export const UI = (function(){
   function smartUse(uid){ const loc=Inventory.locate(uid); if(!loc) return; const def=loc.item.def;
     if(def.type==='weapon') Inventory.equip(uid,'primary');
     else if(['armor','helmet','clothing','rig','backpack'].includes(def.type)) Inventory.equip(uid);
-    else if(def.type==='med'){ Player.heal(def.heal); if(def.cure)Status.clear('bleed'); Inventory.dropOrDestroy(uid); Audio.play('ui'); }
+    else if(def.type==='med'||def.type==='food'){ Player.useConsumable(uid); Audio.play('ui'); }  // uses ONE, decrements the stack (USE-1-NOT-STACK)
     else if(def.type==='attachment') Inventory.installAttachment(uid);
     else if(loot) quickMove(uid);
     renderInventory(); refreshHUD(); }
@@ -687,6 +727,11 @@ export const UI = (function(){
     if(drag.def.type==='attachment'){ const ws=wslotUnder(x,y); if(ws){ const wit=S.profile.equip[ws.dataset.wslot]; ws.classList.add(weaponAccepts(wit,drag.def)?'drop-ok':'drop-bad'); return; } }
     const gel=gridUnder(x,y);
     if(gel&&gel.__grid){ const r=gel.getBoundingClientRect(); const w=drag.rot?drag.def.size[1]:drag.def.size[0], h=drag.rot?drag.def.size[0]:drag.def.size[1];
+      // hovering over a CASE in the grid → highlight it as a drop-INTO target
+      // (ok if the case accepts this type, bad if it's a typed case that doesn't).
+      const tgt=caseUnder(gel.__grid, x, y, r);
+      if(tgt && tgt.uid!==drag.uid && !Inventory.isContainer(drag)){
+        gel.classList.add(Inventory.caseAccepts(tgt, drag)?'drop-ok':'drop-bad'); return; }
       const gx=clamp(Math.floor((x-r.left)/CELL)-Math.floor(w/2),0,gel.__grid.w-w), gy=clamp(Math.floor((y-r.top)/CELL)-Math.floor(h/2),0,gel.__grid.h-h);
       gel.classList.add(gel.__grid.fits(drag.def,gx,gy,drag.rot,drag.uid)?'drop-ok':'drop-bad'); }
     const sel=slotUnder(x,y); if(sel) sel.classList.add('drop-ok'); }
@@ -711,10 +756,10 @@ export const UI = (function(){
       Inventory.dropOrDestroy(uid);
       const p=GFX.yaw.position; const a=Math.random()*Math.PI*2, r=0.9+Math.random()*0.5;
       try{ Loot.spawnPickup(p.x+Math.cos(a)*r, p.z+Math.sin(a)*r, item); }catch(_){}
-      Audio.play('ui'); toast('Dropped '+item.def.name,'neu');
+      Audio.play('ui'); toast('Dropped '+Inventory.itemName(item),'neu');
     } else {
       Inventory.dropOrDestroy(uid);
-      Audio.play('ui'); toast('Discarded '+item.def.name,'neg');
+      Audio.play('ui'); toast('Discarded '+Inventory.itemName(item),'neg');
     }
     return true;
   }
@@ -747,8 +792,30 @@ export const UI = (function(){
     const gel=gridUnder(x,y);
     if(gel&&gel.__grid){ const grid=gel.__grid; const r=gel.getBoundingClientRect();
       const w=d.rot?d.def.size[1]:d.def.size[0], h=d.rot?d.def.size[0]:d.def.size[1];
+      // CASE DROP-INTO: if the cell you released over is occupied by a CASE item
+      // (and you're not dragging that case itself / a container into a case), drop
+      // the item INTO the case's inventory rather than placing it on the grid. A
+      // typed case only takes its relevant types; a rejected drop falls through to a
+      // normal grid placement so the item is never lost.
+      const tgt=caseUnder(grid, x, y, r);
+      if(tgt && tgt.uid!==d.uid && !Inventory.isContainer(d)){
+        const cg=Inventory.containerGrid(tgt);
+        if(cg){
+          if(!Inventory.caseAccepts(tgt, d)) toast(tgt.def.name+' won’t take that','neg');
+          else if(Inventory.quickTo(d.uid, cg)){ Audio.play('ui'); toast('Stowed in '+tgt.def.name,'pos'); renderInventory(); refreshHUD(); return; }
+        }
+      }
       const px=clamp(Math.floor((x-r.left)/CELL)-Math.floor(w/2),0,grid.w-w), py=clamp(Math.floor((y-r.top)/CELL)-Math.floor(h/2),0,grid.h-h);
       Inventory.move(d.uid, grid, px, py, d.rot); renderInventory(); refreshHUD(); }
+  }
+  // which CASE item (if any) sits under the pointer in this grid? Maps the screen
+  // point to a grid cell, reads the occupant uid, and returns it only when it's a
+  // case container (the drag-onto-case target). Read-only — no mutation.
+  function caseUnder(grid, x, y, rect){
+    const cx=Math.floor((x-rect.left)/CELL), cy=Math.floor((y-rect.top)/CELL);
+    if(cx<0||cy<0||cx>=grid.w||cy>=grid.h) return null;
+    const m=grid._map(); const uid=m[cy*grid.w+cx]; if(!uid) return null;
+    const it=grid.find(uid); return (it && it.def.type==='case' && Inventory.isContainer(it)) ? it : null;
   }
   addEventListener('pointermove', ev=>{ if(!drag) return; moveGhost(ev.clientX,ev.clientY); highlight(ev.clientX,ev.clientY); updateDropOutFeedback(ev.clientX,ev.clientY); });
   addEventListener('keydown', ev=>{ if(drag && ev.code==='KeyR'){ ev.preventDefault(); drag.rot=drag.rot?0:1; sizeGhost(); } });
@@ -769,7 +836,7 @@ export const UI = (function(){
     }
     else if(['armor','helmet','clothing','rig','backpack'].includes(def.type)) acts.push(['Equip',()=>Inventory.equip(uid)]);
     else if(def.type==='attachment') acts.push(['Install on weapon',()=>Inventory.installAttachment(uid)]);
-    else if(def.type==='med'||def.type==='food') acts.push(['Use',()=>{ Player.heal(def.heal); if(def.cure)Status.clear('bleed'); Inventory.dropOrDestroy(uid); }]);
+    else if(def.type==='med'||def.type==='food') acts.push(['Use',()=>{ Player.useConsumable(uid); }]);  // uses ONE, decrements the stack
     else if(def.type==='deployable') acts.push(['Deploy',()=>Allies.deploy()]);
     // when a container window is open, offer to stow loose items INTO it (skip the
     // container itself and items already inside — Inventory guards nesting anyway).
@@ -777,7 +844,24 @@ export const UI = (function(){
       if(cwUid===uid || Inventory.isContainer(it)) continue;     // never stow a container into a window via this shortcut
       const cwLoc=Inventory.locate(cwUid); if(!cwLoc) continue;
       const cwGrid=Inventory.containerGrid(cwLoc.item); if(!cwGrid || loc.grid===cwGrid) continue;
+      if(!Inventory.caseAccepts(cwLoc.item, it)) continue;       // typed case won't take this type
       acts.push(['→ '+cwLoc.item.def.name, ()=>Inventory.quickTo(uid, cwGrid)]);
+    }
+    // ALSO offer to stow into any CLOSED typed/general case sitting in the same view
+    // (so you don't have to open the case first). Scans the player's reachable grids
+    // for case items that accept this item type and aren't the item itself.
+    if(!Inventory.isContainer(it)){
+      const seenC=new Set();
+      for(const root of [Inventory.stash(), ...Inventory.carried()]){
+        for(const g of Inventory.nestedGrids(root)) for(const ci of g.items){
+          if(!Inventory.isContainer(ci) || ci.uid===uid || seenC.has(ci.uid)) continue;
+          if(contWins.has(ci.uid)) continue;                    // already covered above (open window)
+          const cg=Inventory.containerGrid(ci); if(!cg || cg===loc.grid) continue;
+          if(ci.def.type!=='case') continue;                    // only cases get the shortcut (bags/rigs are equipped)
+          if(!Inventory.caseAccepts(ci, it)) continue;
+          seenC.add(ci.uid); acts.push(['→ '+ci.def.name, ()=>{ if(!Inventory.quickTo(uid, cg)) toast(ci.def.name+' won’t take that','neg'); }]);
+        }
+      }
     }
     if(loot && onExternal(loc)) acts.push(['Take',()=>Inventory.quickToAny(uid, intakeTargets(def))]);
     else if(loot){ const dest=isCorpse(loot)?corpseStash():loot.grid; if(dest) acts.push(['→ Body',()=>Inventory.quickTo(uid, dest)]); }
@@ -787,7 +871,7 @@ export const UI = (function(){
     // corpse/crate, keep the plain destroy (you can't "drop" what you haven't taken).
     if(loot && onExternal(loc)) acts.push(['Discard',()=>Inventory.dropOrDestroy(uid)]);
     else acts.push([effMode()===MODE.RAID?'Drop':'Discard',()=>dropToWorld(uid)]);
-    const ctx=$('ctx'); ctx.innerHTML=`<div class="ci t">${def.name}</div>`+acts.map((a,i)=>`<div class="ci" data-i="${i}">${a[0]}</div>`).join('');
+    const ctx=$('ctx'); ctx.innerHTML=`<div class="ci t">${Inventory.itemName(it)}</div>`+acts.map((a,i)=>`<div class="ci" data-i="${i}">${a[0]}</div>`).join('');
     ctx.style.left=Math.min(x,innerWidth-170)+'px'; ctx.style.top=Math.min(y,innerHeight-280)+'px'; ctx.style.display='block';
     ctx.querySelectorAll('[data-i]').forEach(b=>b.onclick=()=>{ acts[b.dataset.i*1][1](); hideCtx(); renderInventory(); refreshHUD(); });
   }
@@ -865,7 +949,7 @@ export const UI = (function(){
     // plain readout when there's no comparable equipped peer (empty slot, or a type
     // like ammo/meds that has no equipped counterpart).
     const equipped = loc.where==='equip';
-    let inner=`<div class="tn">${def.name}</div><div class="tt">${def.type}</div>`;
+    let inner=`<div class="tn">${Inventory.itemName(it)}</div><div class="tt">${def.type}</div>`;
     const cslot = !equipped ? compareSlotOf(def) : null;
     const eqItem = cslot ? S.profile.equip[cslot] : null;
     if(!equipped && eqItem && eqItem.uid!==uid){
@@ -1238,20 +1322,33 @@ export const UI = (function(){
   // without first dragging it out. Enumerate the stash AND the carried containers
   // (rig + backpack) plus any nested case/bag inside them — all are real grid items
   // Vendor.sell(uid) already accepts. Returns [{item, src}] in stash→rig→pack order.
+  // each source also carries an `origin`: 'stash' (the hideout stash) or 'person'
+  // (anything carried — equipped rig + backpack + nested cases). The Sell tab's
+  // PERSON / STASH filter keys off `origin` so it's robust to the display name.
   function sellableSources(){
     const out=[]; const seen=new Set();
-    const collect=(root, tag)=>{ if(!root) return;
-      for(const g of Inventory.nestedGrids(root)) for(const it of g.items){ if(seen.has(it.uid)) continue; seen.add(it.uid); out.push({item:it, src:tag}); } };
-    collect(Inventory.stash(), 'Stash');
+    const collect=(root, tag, origin)=>{ if(!root) return;
+      for(const g of Inventory.nestedGrids(root)) for(const it of g.items){ if(seen.has(it.uid)) continue; seen.add(it.uid); out.push({item:it, src:tag, origin}); } };
+    collect(Inventory.stash(), 'Stash', 'stash');
     const cs=Inventory.carried(); const e=S.profile.equip;
-    if(cs[0]) collect(cs[0], e.rig?e.rig.def.name:'Rig');
-    if(cs[1]) collect(cs[1], e.backpack?e.backpack.def.name:'Pack');
+    if(cs[0]) collect(cs[0], e.rig?e.rig.def.name:'Rig', 'person');
+    if(cs[1]) collect(cs[1], e.backpack?e.backpack.def.name:'Pack', 'person');
     return out;
   }
-  // Sell EVERYTHING enumerated above in one go (stash + rig + pack + nested), not just
-  // the stash. Snapshots uids first since each sale mutates the grids.
+  // Sell tab filter: 'all' | 'stash' | 'person'. Applies the origin filter, then
+  // sorts the result ALPHABETICALLY by display name (clothing colour included).
+  let sellFilter='all';
+  function sellList(){
+    let l=sellableSources();
+    if(sellFilter==='stash')  l=l.filter(s=>s.origin==='stash');
+    if(sellFilter==='person') l=l.filter(s=>s.origin==='person');
+    l.sort((a,b)=>Inventory.itemName(a.item).localeCompare(Inventory.itemName(b.item)));
+    return l;
+  }
+  // Sell EVERYTHING currently shown (honours the active filter). Snapshots uids first
+  // since each sale mutates the grids.
   function sellAllOnPerson(){
-    const uids=sellableSources().map(s=>s.item.uid);
+    const uids=sellList().map(s=>s.item.uid);
     if(!uids.length){ toast('Nothing to sell','neg'); return 0; }
     let n=0; for(const uid of uids){ const loc=Inventory.locate(uid); if(!loc||loc.where!=='grid') continue; Vendor.sell(uid); n++; }
     return n;
@@ -1276,14 +1373,22 @@ export const UI = (function(){
       // stash, the equipped rig + backpack (carried containers), and any nested
       // case/bag inside them. Each is a real grid item, so Vendor.sell(uid) (which
       // accepts any where:'grid' item) handles them all uniformly.
-      const src=sellableSources();
+      // PERSON / STASH filter (toggle to show only carried vs stash items) + a
+      // count so each filter reads at a glance; the list itself is sorted A→Z.
+      const all=sellableSources();
+      const nStash=all.filter(s=>s.origin==='stash').length, nPerson=all.filter(s=>s.origin==='person').length;
+      const filterBar=`<div class="sellfilter" style="display:flex;gap:6px;margin:0 0 10px;">`+
+        [['all','All',all.length],['stash','Stash',nStash],['person','Person',nPerson]].map(([k,lbl,n])=>
+          `<button class="tab ${sellFilter===k?'on':''}" data-sfilter="${k}" style="flex:0 0 auto;padding:6px 12px;">${lbl} <span style="opacity:.6">${n}</span></button>`).join('')+`</div>`;
+      const src=sellList();
       const sellTotal=src.reduce((a,s)=>a+Inventory.sellValue(s.item),0);
-      body = src.length ? `<div class="shophead" style="margin:2px 0 10px"><span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;">${src.length} item${src.length>1?'s':''} · ${sellTotal}c total</span><button class="shopbuy sell" id="sellAll" style="width:auto">⇪ Sell all +${sellTotal}c</button></div>`
+      const sellAllLbl = sellFilter==='all'?'Sell all':(sellFilter==='stash'?'Sell stash':'Sell carried');
+      body = filterBar + (src.length ? `<div class="shophead" style="margin:2px 0 10px"><span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;">${src.length} item${src.length>1?'s':''} · ${sellTotal}c total</span><button class="shopbuy sell" id="sellAll" style="width:auto">⇪ ${sellAllLbl} +${sellTotal}c</button></div>`
         + `<div class="shopgrid">`+src.map(s=>{ const it=s.item; return `<div class="shopcard r-${it.def.rarity||1}">
           <div class="shopic">${iconHTML(it.def)}</div>
-          <div class="shopnm">${it.def.name}</div><div class="shopmeta">${it.def.type}${it.qty>1?` · ×${it.qty}`:''}${s.src!=='Stash'?` · <span style="color:var(--amber)">${s.src}</span>`:''}</div>
+          <div class="shopnm">${Inventory.itemName(it)}</div><div class="shopmeta">${it.def.type}${it.qty>1?` · ×${it.qty}`:''}${s.src!=='Stash'?` · <span style="color:var(--amber)">${s.src}</span>`:''}</div>
           <button class="shopbuy sell" data-sell="${it.uid}">+${Inventory.sellValue(it)}c</button></div>`; }).join('')+`</div>`
-        : '<div class="emptyState"><span class="ic">📦</span>Nothing to sell — bring back loot in your stash, rig or pack.</div>';
+        : `<div class="emptyState"><span class="ic">📦</span>${sellFilter==='person'?'Nothing on your person to sell.':sellFilter==='stash'?'Nothing in the stash to sell.':'Nothing to sell — bring back loot in your stash, rig or pack.'}</div>`);
     } else { // buyback
       const list=Vendor.buybackList();
       body = list.length ? `<div class="shopgrid">`+list.map(b=>{ const d=DATA.items[b.id]||{}; const can=cr>=b.price;
@@ -1323,6 +1428,7 @@ export const UI = (function(){
     $('vendorCard').querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{ vendorTab=b.dataset.tab; renderVendor(); });
     $('vendorCard').querySelectorAll('[data-buy]').forEach(b=>b.onclick=()=>{ Vendor.buy(b.dataset.buy); Audio.play('ui'); renderVendor(); refreshHUD(); });
     $('vendorCard').querySelectorAll('[data-sell]').forEach(b=>b.onclick=()=>{ Vendor.sell(b.dataset.sell*1); Audio.play('pickup'); renderVendor(); refreshHUD(); });
+    $('vendorCard').querySelectorAll('[data-sfilter]').forEach(b=>b.onclick=()=>{ sellFilter=b.dataset.sfilter; renderVendor(); });
     { const sa=$('sellAll'); if(sa) sa.onclick=()=>{ sellAllOnPerson(); Audio.play('pickup'); renderVendor(); refreshHUD(); }; }
     $('vendorCard').querySelectorAll('[data-bb]').forEach(b=>b.onclick=()=>{ Vendor.buyback(b.dataset.bb); Audio.play('ui'); renderVendor(); refreshHUD(); });
   }
@@ -1483,5 +1589,5 @@ export const UI = (function(){
     if($('ovReport') && $('ovReport').classList.contains('show')) renderReport(); });
 
   return { setObjective, prompt, hit, dmgDir, banner, flashReload, toast, refreshHUD, renderStart, toggleInventory, openStation,
-           openVendor, openCraft, openSkills, openLoot, openSettings, openMod, openReport, showExtractChoice, showResult, pause, resume, closeMenus, anyOverlayOpen, closeTopOverlay };
+           openVendor, openCraft, openSkills, openLoot, openSettings, openMod, openReport, showExtractChoice, showResult, pause, resume, closeMenus, anyOverlayOpen, closeTopOverlay, useHotbarSlot };
 })();

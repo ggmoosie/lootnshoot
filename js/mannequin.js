@@ -82,6 +82,27 @@ export function buildMannequin(equip) {
 
   // ---- EQUIPPED gear overlays ----
 
+  // clothing: the SOFT layer worn under armor — a coloured shirt over the torso/arms
+  // and trousers over the legs, tinted by the item's rolled colourway (inst.color.hex,
+  // e.g. a blue shirt). Rendered FIRST (under the armor/rig overlays) so a plate
+  // carrier still sits proud on top. This is why "clothing wasn't showing": the
+  // mannequin never drew a clothing layer before. Falls back to a neutral tone if an
+  // old item has no rolled colour yet.
+  if (equip.clothing) {
+    const hex = (equip.clothing.inst && equip.clothing.inst.color && typeof equip.clothing.inst.color.hex === 'number')
+      ? equip.clothing.inst.color.hex : 0x3a4048;
+    const cloth = () => new T.MeshStandardMaterial({ color: hex, roughness: 0.9, metalness: 0.04 });
+    // shirt: a thin shell over the chest + abdomen
+    g.add(box(0.54, 0.66, 0.32, cloth(), 0, 1.18, 0));
+    // sleeves: short cuffs on the upper arms so the colour reads on the limbs too
+    g.add(box(0.17, 0.3, 0.17, cloth(), -0.36, 1.28, 0.04));
+    g.add(box(0.17, 0.3, 0.17, cloth(),  0.36, 1.28, 0.04));
+    // trousers: cover the hips + thighs
+    g.add(box(0.5, 0.26, 0.31, cloth(), 0, 0.80, 0));
+    g.add(box(0.22, 0.5, 0.22, cloth(), -0.14, 0.5, 0));
+    g.add(box(0.22, 0.5, 0.22, cloth(),  0.14, 0.5, 0));
+  }
+
   // helmet: a slightly oversized shell over the head, tinted by rarity, with a
   // dark visor band across the front.
   if (equip.helmet) {

@@ -61,9 +61,14 @@ export class Grid {
   static fromJSON(o){ const g=new Grid(o.w,o.h); g.items=o.items.map(desItem); return g; }
 }
 
+// roll a random colourway for a clothing piece (data-driven palette). Stored on the
+// item INSTANCE so two T-Shirts can be different colours; surfaces in the item name
+// ("Blue T-Shirt") and as a tint on the 3D mannequin mesh.
+function rollClothingColor(){ const p=DATA.clothingColors; if(!p||!p.length) return null; return p[Math.floor(Math.random()*p.length)]; }
 export function defaultInst(def){
   if(def.type==='weapon') return {ammo:0, attachments:{}};
   if(def.grid) return {container:new Grid(def.grid[0],def.grid[1])};
+  if(def.type==='clothing'){ const c=rollClothingColor(); return c?{color:c}:{}; }
   return {};
 }
 export function newItem(id, qty=1, inst){
@@ -75,6 +80,7 @@ export function serItem(it){
   if(it.def.type==='weapon'){ o.inst.ammo=it.inst.ammo||0; o.inst.attachments=it.inst.attachments||{}; }
   if(it.def.grid){ o.inst.container=it.inst.container.toJSON(); }
   if(typeof it.def.maxDura==='number' && typeof it.inst.dura==='number') o.inst.dura=it.inst.dura; // gear wear (durability-lite)
+  if(it.def.type==='clothing' && it.inst.color) o.inst.color=it.inst.color; // persist the rolled colourway
   return o;
 }
 export function desItem(o){
@@ -82,6 +88,7 @@ export function desItem(o){
   if(def.type==='weapon'){ inst.ammo=o.inst.ammo||0; inst.attachments=o.inst.attachments||{}; }
   if(def.grid){ inst.container=o.inst&&o.inst.container?Grid.fromJSON(o.inst.container):new Grid(def.grid[0],def.grid[1]); }
   if(typeof def.maxDura==='number') inst.dura = (o.inst&&typeof o.inst.dura==='number')?o.inst.dura:def.maxDura; // restore/seed gear wear
+  if(def.type==='clothing') inst.color = (o.inst&&o.inst.color) ? o.inst.color : rollClothingColor(); // restore/seed colourway (old saves get one now)
   return {uid:uid(), def, qty:o.qty, x:o.x, y:o.y, rot:o.rot, inst};
 }
 
@@ -189,10 +196,19 @@ export const Inventory = (function(){
     if(!isContainer(item) || !toGrid) return false;
     return nestedGrids(item.inst.container).includes(toGrid);
   }
+  // Typed-container guard: if the destination grid belongs to a case with an
+  // accept-list, the item's type must be on it. True = the move is illegal (reject).
+  function gridRejects(item, toGrid){
+    if(!toGrid) return false;
+    const owner=ownerOfGrid(toGrid);
+    if(!owner) return false;                      // a top-level grid (stash/rig/pack) — no filter
+    return !caseAccepts(owner, item);
+  }
   // drag/drop move: detach from wherever it is, place into target grid at cell; rollback on failure
   function move(uid, toGrid, x, y, rot){
     const loc=locate(uid); if(!loc) return false; const item=loc.item; const ox=item.x, oy=item.y, orot=item.rot;
     if(wouldNest(item, toGrid)) return false;   // refuse putting a container inside itself
+    if(gridRejects(item, toGrid)) return false; // typed case won't take this item type
     removeFrom(loc);
     if(placeAt(item, toGrid, x, y, rot)){ Events.emit('inv:changed'); return true; }
     item.x=ox; item.y=oy; item.rot=orot; restore(loc, item);
@@ -202,6 +218,7 @@ export const Inventory = (function(){
   function quickTo(uid, toGrid){
     const loc=locate(uid); if(!loc) return false; const item=loc.item;
     if(wouldNest(item, toGrid)) return false;   // refuse putting a container inside itself
+    if(gridRejects(item, toGrid)) return false; // typed case won't take this item type
     removeFrom(loc);
     if(toGrid.add(item)===0){ Events.emit('inv:changed'); return true; }
     restore(loc, item);
@@ -214,8 +231,9 @@ export const Inventory = (function(){
   function quickToAny(uid, grids){
     const loc=locate(uid); if(!loc) return false; const item=loc.item;
     const seen=new Set(); const cands=[];
-    // skip null/dupes AND any grid the item would nest inside (its own subtree)
-    for(const g of (grids||[])){ if(g && !seen.has(g) && !wouldNest(item,g)){ seen.add(g); cands.push(g); } }
+    // skip null/dupes, any grid the item would nest inside (its own subtree), AND any
+    // typed case that rejects this item type (so quick-stow respects the filter too).
+    for(const g of (grids||[])){ if(g && !seen.has(g) && !wouldNest(item,g) && !gridRejects(item,g)){ seen.add(g); cands.push(g); } }
     if(!cands.length) return false;
     removeFrom(loc);
     for(const g of cands){ if(g.add(item)===0){ Events.emit('inv:changed'); return true; } }
@@ -263,6 +281,44 @@ export const Inventory = (function(){
     Events.emit('inv:changed'); Events.emit('equip:changed'); return true;
   }
   function dropOrDestroy(uid){ const loc=locate(uid); if(loc){ removeFrom(loc); Events.emit('inv:changed'); return true; } return false; }
+  // CONSUME ONE unit of a stacked item (meds/food/etc). Decrements qty by 1 and only
+  // removes the instance when the stack hits 0 — so "Use" spends a single bandage,
+  // not the whole stack. Returns true if a unit was consumed. (The old use path
+  // called dropOrDestroy, which nuked the entire stack — the USE-1-NOT-STACK bug.)
+  function consumeOne(uid){
+    const loc=locate(uid); if(!loc||loc.where!=='grid') {
+      // non-grid (shouldn't happen for consumables) → fall back to destroying it.
+      if(loc){ removeFrom(loc); Events.emit('inv:changed'); return true; } return false;
+    }
+    const it=loc.item;
+    if(it.qty>1){ it.qty--; } else { loc.grid.remove(it.uid); }
+    Events.emit('inv:changed'); return true;
+  }
+  // Display name for an item: clothing prepends its rolled colourway ("Blue T-Shirt").
+  // Everything else uses the def name unchanged. Used everywhere the UI shows an
+  // INSTANCE name; def-only listings (vendor buy, skills) keep the plain def.name.
+  function itemName(it){ if(it&&it.def&&it.def.type==='clothing'&&it.inst&&it.inst.color&&it.inst.color.name) return it.inst.color.name+' '+it.def.name; return it&&it.def?it.def.name:''; }
+  // Typed-container acceptance: a case with def.accepts only takes those item TYPES.
+  // No `accepts` = a general container (Item Case / backpacks / rigs) takes anything.
+  // A container can never accept ANOTHER container (would let you nest a case into a
+  // restricted case, sidestepping the filter) — that's already guarded by wouldNest
+  // for self-nesting, but we also block type-mismatched nesting here.
+  function caseAccepts(caseItem, item){
+    if(!caseItem||!item) return false;
+    const acc=caseItem.def&&caseItem.def.accepts;
+    if(!acc||!acc.length) return true;            // general container — anything goes
+    return acc.includes(item.def.type);
+  }
+  // Find which open/known container item OWNS a given grid (so a drop into a grid can
+  // be checked against that container's accept-list). Scans the stash + carried roots.
+  function ownerOfGrid(grid){
+    const roots=[stash(), ...carried()]; if(ext&&ext.grid) roots.push(ext.grid);
+    // walk every container item reachable from a root; return the one whose inner grid
+    // is the target grid (depth-first, recursing through nested cases/bags).
+    const visit=(g)=>{ for(const it of g.items){ const c=containerGrid(it); if(c){ if(c===grid) return it; const r=visit(c); if(r) return r; } } return null; };
+    for(const root of roots){ const found=visit(root); if(found) return found; }
+    return null;
+  }
   function destForLoose(){ return S.run ? (carried()[0]||stash()) : stash(); }
   // install a specific attachment onto a specific weapon's matching slot (weapon-mod screen)
   function installOn(weaponUid, attUid){
@@ -325,5 +381,5 @@ export const Inventory = (function(){
     for(const p of pieces){ const it=p.it; it.inst.dura=Math.max(0, (typeof it.inst.dura==='number'?it.inst.dura:it.def.maxDura) - loss*(p.dr/drSum)); }
   }
 
-  return { Grid, carried, stash, addLoot, locate, move, quickTo, quickToAny, rigRelevant, moveTo:quickTo, placeAt, setExternal, externalActor, extGrids, equip, installAttachment, installOn, removeAttachment, dropOrDestroy, sellValue, newItem, slotFor, gearStat, gearTotals, wearGear, isContainer, containerGrid, nestedGrids, parentGridOf };
+  return { Grid, carried, stash, addLoot, locate, move, quickTo, quickToAny, rigRelevant, moveTo:quickTo, placeAt, setExternal, externalActor, extGrids, equip, installAttachment, installOn, removeAttachment, dropOrDestroy, consumeOne, itemName, caseAccepts, ownerOfGrid, sellValue, newItem, slotFor, gearStat, gearTotals, wearGear, isContainer, containerGrid, nestedGrids, parentGridOf };
 })();
