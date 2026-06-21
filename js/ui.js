@@ -1335,13 +1335,60 @@ export const UI = (function(){
     if(cs[1]) collect(cs[1], e.backpack?e.backpack.def.name:'Pack', 'person');
     return out;
   }
-  // Sell tab filter: 'all' | 'stash' | 'person'. Applies the origin filter, then
-  // sorts the result ALPHABETICALLY by display name (clothing colour included).
+  // ITEM-TYPE filter (Buy + Sell). The data.js item defs carry a granular `type`
+  // (weapon, ammo, attachment, med, food, throwable, valuable, key, armor, helmet,
+  // clothing, backpack, rig, case, material, deployable). Collapse those raw types
+  // into a handful of player-facing buckets so the chip row stays short and reads
+  // the way the user shops: Guns / Ammo / Attachments / Consumables / Valuables /
+  // Gear / Storage / Materials. typeBucket maps a def → its bucket key+label; the
+  // chip row is built from the buckets actually PRESENT in the current tab's list.
+  const TYPE_BUCKETS = {
+    weapon:    ['guns','Guns'],
+    ammo:      ['ammo','Ammo'],
+    attachment:['attach','Attachments'],
+    med:       ['consum','Consumables'],
+    food:      ['consum','Consumables'],
+    throwable: ['consum','Consumables'],
+    valuable:  ['value','Valuables'],
+    key:       ['value','Valuables'],
+    intel:     ['value','Valuables'],
+    armor:     ['gear','Gear'],
+    helmet:    ['gear','Gear'],
+    clothing:  ['gear','Gear'],
+    backpack:  ['gear','Gear'],
+    rig:       ['gear','Gear'],
+    case:      ['store','Storage'],
+    material:  ['mat','Materials'],
+    deployable:['gear','Gear'],
+  };
+  // Stable display order for the chip row (only buckets that exist get a chip).
+  const TYPE_ORDER = ['guns','ammo','attach','consum','gear','value','store','mat'];
+  function typeBucket(def){ const m = def && TYPE_BUCKETS[def.type]; return m ? {key:m[0], label:m[1]} : {key:'other', label:'Other'}; }
+  // Active type bucket per tab ('all' = show everything). Buy + Sell remember their
+  // own choice so switching tabs doesn't clobber the other's filter.
+  let buyType='all', sellType='all';
+  // Build the type-chip row for a list of item defs. `active` = current bucket key,
+  // `attr` = data-attribute the click handler keys off, with an "All" chip first.
+  function typeChips(defs, active, attr){
+    const counts={}; for(const d of defs){ const b=typeBucket(d); counts[b.key]=(counts[b.key]||0)+1; }
+    const present=TYPE_ORDER.filter(k=>counts[k]); if(counts.other) present.push('other');
+    if(present.length<2) return '';   // 0 or 1 type → no point showing a filter
+    const labelFor=k=>{ for(const t in TYPE_BUCKETS) if(TYPE_BUCKETS[t][0]===k) return TYPE_BUCKETS[t][1]; return 'Other'; };
+    const chip=(k,lbl,n)=>`<button class="tab ${active===k?'on':''}" ${attr}="${k}" style="flex:0 0 auto;padding:6px 12px;">${lbl}${n!=null?` <span style="opacity:.6">${n}</span>`:''}</button>`;
+    return `<div class="typefilter" style="display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px;">`
+      + chip('all','All',defs.length)
+      + present.map(k=>chip(k,labelFor(k),counts[k])).join('')
+      + `</div>`;
+  }
+  // Sell tab filter: 'all' | 'stash' | 'person'. Applies the origin filter + the
+  // TYPE filter, then sorts the result ALPHABETICALLY by display name (clothing
+  // colour included). Person/stash + type + sort all compose.
   let sellFilter='all';
   function sellList(){
     let l=sellableSources();
     if(sellFilter==='stash')  l=l.filter(s=>s.origin==='stash');
     if(sellFilter==='person') l=l.filter(s=>s.origin==='person');
+    if(sellType!=='all')      l=l.filter(s=>typeBucket(s.item.def).key===sellType);
     l.sort((a,b)=>Inventory.itemName(a.item).localeCompare(Inventory.itemName(b.item)));
     return l;
   }
@@ -1358,7 +1405,13 @@ export const UI = (function(){
     const rep=Vendor.repInfo();
     let body='';
     if(vendorTab==='buy'){
-      body=`<div class="shopgrid">`+DATA.vendor.map(id=>{ const d=DATA.items[id]; if(!d) return '';
+      // Full stock (deduped) drives the type-chip row; the active bucket then filters
+      // which cards render. Chips reflect the WHOLE catalogue so they never vanish
+      // when you pick one — selecting a type just narrows the grid below.
+      const stockIds=[...new Set(DATA.vendor)].filter(id=>DATA.items[id]);
+      const typeBar=typeChips(stockIds.map(id=>DATA.items[id]), buyType, 'data-btype');
+      const shownIds=buyType==='all'?stockIds:stockIds.filter(id=>typeBucket(DATA.items[id]).key===buyType);
+      body=typeBar+(shownIds.length?`<div class="shopgrid">`+shownIds.map(id=>{ const d=DATA.items[id]; if(!d) return '';
         const p=Vendor.price(id), si=Vendor.stockInfo(id), out=si.qty<=0, can=cr>=p&&!out;
         const stockLine = out
           ? `<div class="shopmeta" style="color:var(--bad)">Out · ${si.restockIn?'next '+fmtRestock(si.restockIn):'restocking'}</div>`
@@ -1367,7 +1420,8 @@ export const UI = (function(){
           <div class="shopic">${iconHTML(d)}</div>
           <div class="shopnm">${d.name}</div><div class="shopmeta">${d.type}${d.size?` · ${d.size[0]}×${d.size[1]}`:''}</div>
           ${stockLine}
-          <button class="shopbuy ${can?'':'no'}" data-buy="${id}" ${out?'disabled':''}>${out?'Out':p+'c'}</button></div>`; }).join('')+`</div>`;
+          <button class="shopbuy ${can?'':'no'}" data-buy="${id}" ${out?'disabled':''}>${out?'Out':p+'c'}</button></div>`; }).join('')+`</div>`
+        : `<div class="emptyState"><span class="ic">🛒</span>Nothing of that type in stock.</div>`);
     } else if(vendorTab==='sell'){
       // Sellable = EVERY on-person item source, not just the main stash grid: the
       // stash, the equipped rig + backpack (carried containers), and any nested
@@ -1380,15 +1434,20 @@ export const UI = (function(){
       const filterBar=`<div class="sellfilter" style="display:flex;gap:6px;margin:0 0 10px;">`+
         [['all','All',all.length],['stash','Stash',nStash],['person','Person',nPerson]].map(([k,lbl,n])=>
           `<button class="tab ${sellFilter===k?'on':''}" data-sfilter="${k}" style="flex:0 0 auto;padding:6px 12px;">${lbl} <span style="opacity:.6">${n}</span></button>`).join('')+`</div>`;
+      // TYPE chips, built from the origin-filtered set (so they compose with the
+      // person/stash filter) but NOT the type filter itself — so chips persist after
+      // a pick. Counts reflect what's sellable under the current person/stash choice.
+      const originScoped = sellFilter==='all'?all : all.filter(s=>s.origin===sellFilter);
+      const typeBar=typeChips(originScoped.map(s=>s.item.def), sellType, 'data-stype');
       const src=sellList();
       const sellTotal=src.reduce((a,s)=>a+Inventory.sellValue(s.item),0);
       const sellAllLbl = sellFilter==='all'?'Sell all':(sellFilter==='stash'?'Sell stash':'Sell carried');
-      body = filterBar + (src.length ? `<div class="shophead" style="margin:2px 0 10px"><span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;">${src.length} item${src.length>1?'s':''} · ${sellTotal}c total</span><button class="shopbuy sell" id="sellAll" style="width:auto">⇪ ${sellAllLbl} +${sellTotal}c</button></div>`
+      body = filterBar + typeBar + (src.length ? `<div class="shophead" style="margin:2px 0 10px"><span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;">${src.length} item${src.length>1?'s':''} · ${sellTotal}c total</span><button class="shopbuy sell" id="sellAll" style="width:auto">⇪ ${sellAllLbl} +${sellTotal}c</button></div>`
         + `<div class="shopgrid">`+src.map(s=>{ const it=s.item; return `<div class="shopcard r-${it.def.rarity||1}">
           <div class="shopic">${iconHTML(it.def)}</div>
           <div class="shopnm">${Inventory.itemName(it)}</div><div class="shopmeta">${it.def.type}${it.qty>1?` · ×${it.qty}`:''}${s.src!=='Stash'?` · <span style="color:var(--amber)">${s.src}</span>`:''}</div>
           <button class="shopbuy sell" data-sell="${it.uid}">+${Inventory.sellValue(it)}c</button></div>`; }).join('')+`</div>`
-        : `<div class="emptyState"><span class="ic">📦</span>${sellFilter==='person'?'Nothing on your person to sell.':sellFilter==='stash'?'Nothing in the stash to sell.':'Nothing to sell — bring back loot in your stash, rig or pack.'}</div>`);
+        : `<div class="emptyState"><span class="ic">📦</span>${sellType!=='all'?'Nothing of that type to sell — try another filter.':sellFilter==='person'?'Nothing on your person to sell.':sellFilter==='stash'?'Nothing in the stash to sell.':'Nothing to sell — bring back loot in your stash, rig or pack.'}</div>`);
     } else { // buyback
       const list=Vendor.buybackList();
       body = list.length ? `<div class="shopgrid">`+list.map(b=>{ const d=DATA.items[b.id]||{}; const can=cr>=b.price;
@@ -1429,6 +1488,8 @@ export const UI = (function(){
     $('vendorCard').querySelectorAll('[data-buy]').forEach(b=>b.onclick=()=>{ Vendor.buy(b.dataset.buy); Audio.play('ui'); renderVendor(); refreshHUD(); });
     $('vendorCard').querySelectorAll('[data-sell]').forEach(b=>b.onclick=()=>{ Vendor.sell(b.dataset.sell*1); Audio.play('pickup'); renderVendor(); refreshHUD(); });
     $('vendorCard').querySelectorAll('[data-sfilter]').forEach(b=>b.onclick=()=>{ sellFilter=b.dataset.sfilter; renderVendor(); });
+    $('vendorCard').querySelectorAll('[data-btype]').forEach(b=>b.onclick=()=>{ buyType=b.dataset.btype; renderVendor(); });
+    $('vendorCard').querySelectorAll('[data-stype]').forEach(b=>b.onclick=()=>{ sellType=b.dataset.stype; renderVendor(); });
     { const sa=$('sellAll'); if(sa) sa.onclick=()=>{ sellAllOnPerson(); Audio.play('pickup'); renderVendor(); refreshHUD(); }; }
     $('vendorCard').querySelectorAll('[data-bb]').forEach(b=>b.onclick=()=>{ Vendor.buyback(b.dataset.bb); Audio.play('ui'); renderVendor(); refreshHUD(); });
   }
