@@ -152,5 +152,5 @@ _no top-level exports_
 
 ## js/world.js
 
-- `World` (const) — js/world.js:23
+- `World` (const) — js/world.js:24
 
