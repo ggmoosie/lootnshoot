@@ -56,7 +56,23 @@ export const World = (function(){
     return g;
   }
 
-  function reset(){ GFX.clearWorld(); colliders=[]; solids=[]; interactables=[]; doors=[]; mapBoxes=[]; extractPos=null; extractMesh=null; extractHold=0; hostage=null; bomb=null; matCache=new Map(); geoCache=new Map(); Enemies.clear(); Loot.clear(); Projectiles.clear(); Harvest.clear(); Allies.clear(); FX.clear(); }
+  // placed building footprints (XZ rects), so the layout generators can REJECT a
+  // building that would overlap one already placed — the old generators scattered
+  // boxes blind and frequently interpenetrated, which is the single biggest reason
+  // the proc buildings read as "bad" (walls fused into each other, doors sealed by
+  // a neighbour). Reset each raid. Cheap O(n) check, n≈a few dozen.
+  let footprints=[];
+  function footprintFree(cx,cz,w,d,pad){
+    pad=pad||2;
+    const aMinX=cx-w/2-pad, aMaxX=cx+w/2+pad, aMinZ=cz-d/2-pad, aMaxZ=cz+d/2+pad;
+    for(const f of footprints){
+      if(aMinX<f.maxX && aMaxX>f.minX && aMinZ<f.maxZ && aMaxZ>f.minZ) return false;
+    }
+    return true;
+  }
+  function reserveFootprint(cx,cz,w,d){ footprints.push({minX:cx-w/2,maxX:cx+w/2,minZ:cz-d/2,maxZ:cz+d/2}); }
+
+  function reset(){ GFX.clearWorld(); colliders=[]; solids=[]; interactables=[]; doors=[]; mapBoxes=[]; footprints=[]; extractPos=null; extractMesh=null; extractHold=0; hostage=null; bomb=null; matCache=new Map(); geoCache=new Map(); Enemies.clear(); Loot.clear(); Projectiles.clear(); Harvest.clear(); Allies.clear(); FX.clear(); }
   function addBox(x,z,w,d,h,color,opt={}){
     // Geometry + material are SHARED via the caches above unless the caller needs
     // to mutate this mesh's material later (opt.uniqueMat → fresh material, e.g.
@@ -127,9 +143,16 @@ export const World = (function(){
     const d=new T.DirectionalLight(sun,inten); d.position.set(30,60,20); d.castShadow=true; d.shadow.mapSize.set(1024,1024);
     d.shadow.camera.left=-90;d.shadow.camera.right=90;d.shadow.camera.top=90;d.shadow.camera.bottom=-90;d.shadow.camera.far=200; GFX.world.add(d); }
 
-  function moveActor(pos,delta,radius){
+  // 2D-AABB push-out. `footY` (optional) makes it height-aware: a collider whose
+  // TOP is at/below the actor's feet (within a small step tolerance) is something
+  // the actor is standing ON, not a wall, so it doesn't push them — this lets the
+  // player walk around ON TOP of a mantled crate/ledge without being shoved off.
+  // Callers that omit footY (enemies, hostage escort) get the ORIGINAL Y-agnostic
+  // behaviour byte-for-byte, so AI/escort collision is unchanged.
+  function moveActor(pos,delta,radius,footY){
     pos.x+=delta.x; pos.z+=delta.z;
     for(const c of colliders){ if(c.open) continue;
+      if(footY!=null && c.top!=null && c.top<=footY+0.35) continue;   // standing on it → not a wall
       const cx=Math.max(c.minX,Math.min(pos.x,c.maxX)), cz=Math.max(c.minZ,Math.min(pos.z,c.maxZ));
       const dx=pos.x-cx, dz=pos.z-cz, d2=dx*dx+dz*dz;
       if(d2<radius*radius){ const d=Math.sqrt(d2)||1e-4, push=(radius-d)/d; pos.x+=dx*push; pos.z+=dz*push; } }
@@ -137,56 +160,163 @@ export const World = (function(){
 
   // is (x,z) clear of every solid collider (with a body radius)? — used to
   // confirm a vault/climb LANDING spot isn't inside another wall/obstacle.
-  function spotClear(x,z,radius){
-    for(const c of colliders){ if(c.open) continue;
+  // `ignore` (optional collider ref) is skipped — the traversal probe passes the
+  // obstacle being surmounted so its own AABB doesn't fail the on-top clearance test.
+  function spotClear(x,z,radius,ignore){
+    for(const c of colliders){ if(c.open||c===ignore) continue;
       const cx=Math.max(c.minX,Math.min(x,c.maxX)), cz=Math.max(c.minZ,Math.min(z,c.maxZ));
       const dx=x-cx, dz=z-cz; if(dx*dx+dz*dz < radius*radius) return false; }
     return true;
   }
-  // VAULT / CLIMB probe. Looks just ahead of the player along their facing for a
-  // surmountable obstacle (a low collider you can hop OVER = vault, or a chest-to-
-  // head-high ledge you can clamber ONTO/over = climb). Returns a traversal plan
-  //   { type:'vault'|'climb', land:{x,z}, top, rise, dur }  or null.
-  // Heights come from the collider `top` field added in addBox. The landing spot
-  // is the far side of the obstacle (vault) or the obstacle top surface (climb),
-  // and must be clear. Player Y is fixed-eye, so the actual traversal is a short
-  // scripted slide done in player.js — this just decides IF and WHERE.
-  const VAULT_MAX=1.7, CLIMB_MAX=3.2;          // obstacle-top ceilings (world units)
+  // tallest collider top under (x,z) — the standable ground height at this spot
+  // (0 = bare floor). Used to confirm a MANTLE-ONTO landing is actually on top of
+  // the obstacle and not blocked by something taller, and to seat the player.
+  function groundTopAt(x,z){
+    let top=0;
+    for(const c of colliders){ if(c.open||c.top==null) continue;
+      if(x<c.minX||x>c.maxX||z<c.minZ||z>c.maxZ) continue;
+      if(c.top>top) top=c.top; }
+    return top;
+  }
+
+  // ---- TRAVERSAL PROBE (vault / mantle-onto / mantle-up) -------------------
+  // Standard FPS mantle/vault component model (cf. ALS / generic Mantle
+  // Component): a forward face-trace finds the obstacle directly ahead, its TOP
+  // height + DEPTH along the heading are read from the AABB, then the move is
+  // CLASSIFIED and a believable multi-phase path is planned for player.js to
+  // interpolate (rise to lip → carry across → settle), collision-checked each step.
+  //
+  // Returns one of three plans (or null when nothing is surmountable):
+  //   • 'vault'      — LOW + THIN obstacle (cover, fence, low wall): hop OVER and
+  //                    continue to clear floor on the far side. Ends at ground.
+  //   • 'mantleOnto' — MID surface you can stand on (crate stack, table, low roof
+  //                    edge that's deep): climb UP and END STANDING ON the top.
+  //   • 'mantleUp'   — HIGH ledge / wall-top with standable space above: clamber
+  //                    UP-and-over and end standing on the upper surface.
+  // Plan shape: { type, land:{x,z}, landY, top, rise, dur, lip:{x,z} }
+  //   land  = final XZ; landY = final standing height (0 for vault, top for mantle)
+  //   lip   = XZ point on top of the obstacle the body passes over mid-move
+  //   top   = obstacle top height; rise = how far the body climbs.
+  const VAULT_MAX=1.5;      // obstacle top at/below this can be vaulted clean OVER
+  const MANTLE_MAX=2.3;     // step/climb ONTO surfaces up to here
+  const MANTLE_UP_MAX=2.9;  // clamber UP onto ledges/wall-tops up to here (reach gate)
+  const VAULT_DEPTH_MAX=1.4;// obstacle no deeper than this (along heading) vaults OVER;
+                            // deeper → you can't clear it, so you END ON TOP instead.
   function vaultProbe(pos,dir,radius){
     const fx=dir.x, fz=dir.z; const fl=Math.hypot(fx,fz)||1e-4; const nx=fx/fl, nz=fz/fl;
-    // sample a couple of points just ahead at body level to find the obstacle face
-    for(let reach=0.5; reach<=1.3; reach+=0.4){
+    // FACE TRACE: step forward at body level to find the first obstacle ahead.
+    for(let reach=0.45; reach<=1.25; reach+=0.2){
       const px=pos.x+nx*reach, pz=pos.z+nz*reach;
       for(const c of colliders){ if(c.open) continue;
-        if(c.top==null || c.top>CLIMB_MAX) continue;            // too tall to surmount
-        if(px<c.minX-0.1||px>c.maxX+0.1||pz<c.minZ-0.1||pz>c.maxZ+0.1) continue; // not this box
-        const type = c.top<=VAULT_MAX ? 'vault' : 'climb';
-        // LANDING — march STRAIGHT along the player's facing from their OWN position
-        // (NOT from the box centre, which is what caused the sideways teleport on
-        // wide/angled obstacles). The path is a straight forward slide; we want to
-        // land just past the obstacle's far face with a body radius of clearance.
-        // distance from the player to the obstacle's far face along the heading:
-        const distToFar = Math.abs(nx)*((nx>=0?c.maxX:c.minX)-pos.x)
-                        + Math.abs(nz)*((nz>=0?c.maxZ:c.minZ)-pos.z);
-        // start a full body radius PAST the far face so the first probe is already
-        // clear of the obstacle we're vaulting (its own collider won't fail spotClear).
-        const minTravel = Math.max(0.6, distToFar + radius);
-        const maxTravel = distToFar + radius + 1.2;                // don't fling miles past it
-        // CLAMP the landing so it never overshoots into another wall: walk outward in
-        // small steps and keep the LAST clear spot; stop as soon as a wall appears
-        // after we've found a clear one (so we settle right beyond the obstacle).
-        let best=null;
-        for(let t=minTravel; t<=maxTravel; t+=0.25){
-          const tx=pos.x+nx*t, tz=pos.z+nz*t;
-          if(spotClear(tx,tz,radius*0.85)){ best={x:tx,z:tz}; }
-          else if(best) break;     // hit a wall past a clear spot → stop at the clear one
+        if(c.top==null) continue;                                  // doors/dynamic — skip
+        if(c.top>MANTLE_UP_MAX) continue;                          // too tall to surmount (reach gate)
+        if(px<c.minX-0.12||px>c.maxX+0.12||pz<c.minZ-0.12||pz>c.maxZ+0.12) continue; // not this box
+        const top=c.top;
+        // OBSTACLE DEPTH along the heading: distance from the player's side face to
+        // the far face, projected onto the heading. Thin = vault-over candidate.
+        const distToNear = Math.abs(nx)*((nx>=0?c.minX:c.maxX)-pos.x)
+                         + Math.abs(nz)*((nz>=0?c.minZ:c.maxZ)-pos.z);
+        const distToFar  = Math.abs(nx)*((nx>=0?c.maxX:c.minX)-pos.x)
+                         + Math.abs(nz)*((nz>=0?c.maxZ:c.minZ)-pos.z);
+        const depth=Math.max(0, distToFar-distToNear);             // obstacle thickness ahead
+        // LIP point: where the body crosses the top — just past the near face.
+        const lipT=Math.max(0.05, distToNear+0.05);
+        const lip={x:pos.x+nx*lipT, z:pos.z+nz*lipT};
+
+        // --- (a) VAULT OVER: low + thin, with clear floor beyond -------------
+        if(top<=VAULT_MAX && depth<=VAULT_DEPTH_MAX){
+          const land=marchLanding(pos,nx,nz,radius, distToFar, distToFar+radius+1.3, c, 0);
+          if(land) return { type:'vault', land, landY:0, top, rise:top, lip,
+                            dur:0.42 };
+          // no clear far side (boxed in by a taller wall) → fall through to stand ON it
         }
-        if(!best) continue;        // nowhere clear on the far side → not surmountable here
-        return { type, land:{x:best.x,z:best.z}, top:c.top, rise:c.top,
-                 dur: type==='climb'?0.55:0.4 };
+        // --- (b) MANTLE ONTO: mid surface, end standing ON the top ------------
+        // valid when the obstacle is deep enough to stand on (or we couldn't clear
+        // it) and the space ABOVE its top is free for the body to stand in.
+        if(top<=MANTLE_MAX){
+          const onT=Math.max(distToNear+radius*0.7, (distToNear+distToFar)/2);
+          const ox=pos.x+nx*Math.min(onT,distToFar-0.05), oz=pos.z+nz*Math.min(onT,distToFar-0.05);
+          // clear of OTHER colliders at the on-top spot, and nothing taller here.
+          if(spotClear(ox,oz,radius*0.6,c) && groundTopAt(ox,oz)<=top+0.05)
+            return { type:'mantleOnto', land:{x:ox,z:oz}, landY:top, top, rise:top, lip,
+                     dur:0.5 };
+        }
+        // --- (c) MANTLE UP: high ledge / wall-top — clamber up onto it --------
+        if(top<=MANTLE_UP_MAX){
+          // prefer landing just past the far face (up-and-over onto a roof/ledge at
+          // the SAME top height); if that's not clear, settle ON the top surface.
+          const over=marchLanding(pos,nx,nz,radius, distToFar, distToFar+1.4, c, top);
+          if(over) return { type:'mantleUp', land:over, landY:groundTopAt(over.x,over.z),
+                            top, rise:top, lip, dur:0.6 };
+          const ox=pos.x+nx*Math.min(distToFar-0.1, distToNear+radius), oz=pos.z+nz*Math.min(distToFar-0.1, distToNear+radius);
+          if(spotClear(ox,oz,radius*0.6,c) && groundTopAt(ox,oz)<=top+0.05)
+            return { type:'mantleUp', land:{x:ox,z:oz}, landY:top, top, rise:top, lip,
+                     dur:0.6 };
+        }
       }
     }
     return null;
+  }
+  // March outward along the heading and return the LAST spot that's clear at the
+  // given standing height (atTop = the floor height required there, so we don't
+  // "land" half-inside a taller neighbour). CONTIGUITY is enforced: the scan starts
+  // right at the obstacle's far face and walks forward in FINE steps; the FIRST step
+  // that is blocked (a taller wall hugging the obstacle) ends the scan — so we can
+  // never "land" on the far side of a wall the player would have to clip through.
+  // The obstacle being surmounted is ignored (its own AABB never blocks the path).
+  function marchLanding(pos,nx,nz,radius,minT,maxT,obstacle,atTop){
+    let best=null, started=false;
+    for(let t=minT; t<=maxT; t+=0.12){
+      const tx=pos.x+nx*t, tz=pos.z+nz*t;
+      const clear=spotClear(tx,tz,radius*0.85,obstacle);
+      const groundOk = atTop>0 ? Math.abs(groundTopAt(tx,tz)-atTop)<0.6 : groundTopAt(tx,tz)<=0.6;
+      if(clear && groundOk){ best={x:tx,z:tz}; started=true; }
+      else if(started) break;     // blocked AFTER a clear run → settle on the last clear spot
+      else if(best===null && !clear){
+        // blocked at the very FIRST step (a wall hugs the obstacle's far face) → no
+        // contiguous corridor exists; abort so vault can't jump the wall.
+        return null;
+      }
+    }
+    return best;
+  }
+
+  // ---- SAFE SPAWN -----------------------------------------------------------
+  // Find a clear, valid spot to drop the player into the raid: on solid ground,
+  // not inside/overlapping geometry, and away from live enemies. Searches the
+  // central spawn ring first (the arena keeps a ~16u clear core by construction),
+  // spiralling outward through candidate points and accepting the first that has
+  // body clearance + a generous enemy stand-off; falls back to the most-open spot
+  // it saw so a spawn is ALWAYS produced. Returns {x,z}.
+  function findSafeSpawn(radius){
+    const r=radius||0.45;
+    const enemySafe=8;                  // min distance from any live enemy
+    const mobs=(Enemies.list&&Enemies.list())||[];
+    function enemyDist(x,z){ let m=Infinity; for(const e of mobs){ if(e.dead) continue;
+      const ep=e.group?e.group.position:e.pos; if(!ep) continue;
+      const dx=x-ep.x, dz=z-ep.z, d=Math.hypot(dx,dz); if(d<m) m=d; } return m; }
+    // score a candidate: must be body-clear + on flat-ish ground; higher enemy
+    // distance is better. Returns -1 if invalid.
+    function score(x,z){
+      if(!spotClear(x,z,r*1.15)) return -1;        // overlaps a wall/obstacle
+      if(groundTopAt(x,z)>0.4) return -1;          // standing on top of something
+      return Math.min(enemyDist(x,z), 40);         // prefer farther from enemies (capped)
+    }
+    let best=null, bestS=-1;
+    // ring 0: dead centre, then expanding rings of candidate angles.
+    const rings=[0, 4, 7, 10, 13, 16, 20, 26, 33, 42, 55];
+    for(const rad of rings){
+      const n = rad<1 ? 1 : Math.max(6, Math.round(rad));
+      for(let k=0;k<n;k++){
+        const a=(k/n)*Math.PI*2 + rad*0.37;        // rotate each ring so points don't stack
+        const x=Math.cos(a)*rad, z=Math.sin(a)*rad;
+        const s=score(x,z);
+        if(s>bestS){ bestS=s; best={x,z}; }
+        if(s>=enemySafe) return { x, z, face:Math.atan2(-x,-z) }; // good enough → take it
+      }
+    }
+    if(best) return { x:best.x, z:best.z, face:Math.atan2(-best.x,-best.z) };
+    return { x:0, z:0, face:0 };                    // absolute fallback (centre)
   }
 
   // A swinging door that fills a doorway gap. `axis` says which way the leaf runs:
@@ -304,6 +434,49 @@ export const World = (function(){
     }
   }
 
+  // a low-poly PITCHED roof over a flat-topped shell: two sloped slabs meeting at a
+  // ridge, plus gable end-caps. Pure dressing (deco): it sits ABOVE the wall tops
+  // and adds no colliders/solids, so it never changes LOS/cover/collision — it just
+  // breaks the "stack of open boxes" silhouette that made the old buildings read flat.
+  function addPitchedRoof(cx,cz,w,d,baseY,pal){
+    const ridge=Math.min(2.0, Math.max(w,d)*0.18);            // ridge height above the eave
+    const along = w>=d ? 'x' : 'z';                            // ridge runs along the LONG axis
+    const span = along==='x' ? d : w;                          // the dimension the slopes cover
+    const len  = along==='x' ? w : d;
+    const slopeLen=Math.hypot(span/2, ridge);
+    const tilt=Math.atan2(ridge, span/2);
+    for(const side of [-1,1]){
+      const slab=new T.Mesh(sharedBox(len+0.5, 0.12, slopeLen+0.2), sharedMat(pal.trim,{rough:.92}));
+      // centre of each sloped panel = halfway up the slope, offset to its side
+      const cyMid=baseY+ridge/2, offMid=side*span/4;
+      if(along==='x'){ slab.position.set(cx, cyMid, cz+offMid); slab.rotation.x=side*tilt; }
+      else           { slab.position.set(cx+offMid, cyMid, cz); slab.rotation.z=-side*tilt; }
+      slab.castShadow=false; slab.receiveShadow=true; GFX.world.add(slab);
+    }
+    // gable triangles (approximated by a thin tapered prism = a flat-ish wedge) at
+    // each end, so the roof reads closed rather than two floating ramps.
+    for(const end of [-1,1]){
+      const gx = along==='x' ? cx+end*len/2 : cx;
+      const gz = along==='x' ? cz : cz+end*len/2;
+      addBox(gx, gz, along==='x'?0.2:span, ridge, along==='x'?span:0.2, pal.wall, {...deco, baseY, cast:false});
+    }
+  }
+
+  // scatter a few INTERIOR furniture props into a room cell — low tables, shelves,
+  // a crate or two — so rooms read as inhabited instead of empty shells. These ARE
+  // collidable cover boxes (so they double as in-room cover + vault/mantle targets),
+  // kept low + away from the room centre so they never seal a doorway or block nav.
+  function addFurniture(rx,rz,rw,rd,rng){
+    const n=Math.floor(rng()*2.5);                            // 0..2 props
+    for(let k=0;k<n;k++){
+      const px=rx+(rng()-.5)*Math.max(0,rw-2), pz=rz+(rng()-.5)*Math.max(0,rd-2);
+      const kind=rng();
+      if(kind<0.4)      addBox(px,pz, 1.4, 0.7, 0.8, 0x40362a, {rough:.85});            // table / desk
+      else if(kind<0.7) addBox(px,pz, 0.8, 0.5, 1.6, 0x3a3026, {rough:.9});             // shelf / cabinet
+      else              addBox(px,pz, 0.9, 0.9, 0.9, 0x2f2a22, {rough:.85});            // stacked crate
+    }
+  }
+
   // Building: outer shell (4 walls + a doorway + swinging door) PARTITIONED
   // into 2–4 rooms by internal walls, each with a doorway gap. Loot + cover are
   // distributed per-room. Larger footprints get a second floor: a raised slab
@@ -325,6 +498,8 @@ export const World = (function(){
   function addBuilding(cx,cz,w,d,h,rng,wallColor,facing){
     const t=0.4, gw=2.6, pal=buildingPalette(wallColor||0x3a414a), col=pal.wall;
     facing=facing||'S';
+    reserveFootprint(cx,cz,w,d);                       // claim this plot so the layout
+                                                       // generators won't overlap it with a neighbour
     // ---- foundation plinth: a short, slightly oversized base slab so the
     // building sits planted on the ground with a baseboard band (visual only).
     addBox(cx, cz, w+0.5, d+0.5, 0.45, pal.trim, {...deco, baseY:0, rough:.95});
@@ -347,22 +522,31 @@ export const World = (function(){
     if(facing!=='W') addWindows('z', cz, d, cx-w/2, h, -1, pal, rng);
     if(facing!=='E') addWindows('z', cz, d, cx+w/2, h, +1, pal, rng);
 
-    // ---- top cornice + flat roof + parapet ---------------------------------
-    // a thin overhanging band at the wall top, a roof slab covering the plan, and
-    // a low parapet lip around the edge → a real roofline instead of open boxes.
-    // The roof SLAB is the only added solid (so you can't shoot in from straight
-    // above); it's 0.25 tall so AI cover (needs >COVER_H) never picks it up.
+    // ---- top cornice + roof ------------------------------------------------
+    // a thin overhanging band at the wall top, then a roof. The roof SLAB is the
+    // only added solid (so you can't shoot in from straight above); it's 0.25 tall
+    // so AI cover (needs >COVER_H) never picks it up. ROOF VARIETY breaks the old
+    // "stack of open flat boxes" look: small/short buildings get a PITCHED roof
+    // (residential), bigger/taller ones keep a FLAT roof with parapet + rooftop kit
+    // (commercial/industrial). Both are dressing-only above the structural shell.
     addBox(cx, cz, w+0.4, d+0.4, 0.18, pal.trim, {...deco, baseY:h-0.18, cast:false}); // cornice
     addBox(cx, cz, w, d, 0.25, pal.wall, {collide:false, baseY:h, rough:.95});          // roof slab (solid for LOS)
-    // parapet lip (4 thin runs around the roof edge) — visual
-    addBox(cx, cz-d/2, w, 0.18, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
-    addBox(cx, cz+d/2, w, 0.18, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
-    addBox(cx-w/2, cz, 0.18, d, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
-    addBox(cx+w/2, cz, 0.18, d, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
-    // a little rooftop kit (vent/AC box) on bigger roofs for silhouette interest
-    if(w>=9 && d>=9 && rng()<0.7){
-      const rx=cx+(rng()-.5)*(w-3), rz=cz+(rng()-.5)*(d-3);
-      addBox(rx, rz, 1.4, 1.0, 0.8, pal.trim, {collide:false, solid:false, baseY:h+0.25, rough:.7, metal:.3});
+    const pitched = (h<6 && Math.max(w,d)<=12 && rng()<0.6);
+    if(pitched){
+      addPitchedRoof(cx, cz, w, d, h+0.25, pal);
+    } else {
+      // flat roof: parapet lip (4 thin runs around the roof edge) — visual
+      addBox(cx, cz-d/2, w, 0.18, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
+      addBox(cx, cz+d/2, w, 0.18, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
+      addBox(cx-w/2, cz, 0.18, d, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
+      addBox(cx+w/2, cz, 0.18, d, 0.5, pal.trim, {...deco, baseY:h+0.25, cast:false});
+      // rooftop kit (vent/AC + a stair penthouse box) on bigger roofs for silhouette
+      if(w>=9 && d>=9 && rng()<0.8){
+        const rx=cx+(rng()-.5)*(w-3), rz=cz+(rng()-.5)*(d-3);
+        addBox(rx, rz, 1.4, 1.0, 0.8, pal.trim, {collide:false, solid:false, baseY:h+0.25, rough:.7, metal:.3});
+        if(rng()<0.5){ const px=cx+(rng()-.5)*(w-3), pz=cz+(rng()-.5)*(d-3);
+          addBox(px, pz, 2.0, 2.0, 1.4, pal.wall, {collide:false, solid:false, baseY:h+0.25, rough:.9}); }
+      }
     }
 
     // ---- entry detail: a lintel band + awning over the door + a stoop slab ---
@@ -410,8 +594,10 @@ export const World = (function(){
       else            wallWithGap('x', cx, w, cz+at, h, col, gapOff, gw);
     }
 
-    // ---- distribute loot + cover across rooms ------------------------------
+    // ---- distribute loot + cover + furniture across rooms ------------------
     const types=['locker','weapon','med','safe'];
+    const roomW = along==='x' ? L/rooms : w;          // per-room footprint for furniture spread
+    const roomD = along==='x' ? d : L/rooms;
     for(let r=0;r<rooms;r++){
       const rc = cells[r];
       const rx = along==='x' ? cx+rc : cx + (rng()-.5)*(w-3);
@@ -422,6 +608,11 @@ export const World = (function(){
         const bz = along==='x' ? cz+(rng()-.5)*(d-2.5) : cz+rc+(rng()-.5)*2;
         addBox(bx,bz,1.2,1.2,1.0,0x2a2f33);
       }
+      // interior furniture: a couple of low props per room so it reads inhabited
+      // (they double as cover / vault targets; kept clear of the room centre).
+      const frx = along==='x' ? cx+rc : cx;
+      const frz = along==='x' ? cz : cz+rc;
+      addFurniture(frx, frz, roomW-1.5, roomD-1.5, rng);
     }
 
     // ---- optional second floor --------------------------------------------
@@ -575,8 +766,10 @@ export const World = (function(){
         // a row above it (side +1) opens -Z (S). No sealed solid blocks anymore —
         // even the "variety" footprints are real, door-having buildings.
         const faceRoad = side<0 ? 'N' : 'S';
-        if(rng()<0.78) addBuilding(x,z,bw,bd,bh,rng,col,faceRoad);
-        else addBuilding(x,z,bw*0.8,bd*0.8,bh,rng,col,faceRoad); // smaller, still enterable
+        const small = rng()>=0.78;                    // some storefronts are smaller
+        const fw = small ? bw*0.8 : bw, fd = small ? bd*0.8 : bd;
+        if(!footprintFree(x,z,fw,fd,2)) continue;     // don't fuse into a jittered neighbour
+        addBuilding(x,z,fw,fd,bh,rng,col,faceRoad);
       }
       // sidewalk cover flanking the road
       if(rng()<0.6){ const cz=(roadW/2-0.5)*(rng()<.5?-1:1); addBox(x+(rng()-.5)*step*0.3, cz, 1.4,1.4,1.3,0x33392c,{baseY:terrainHeight(x,cz)}); }
@@ -586,22 +779,37 @@ export const World = (function(){
       if(Math.abs(cz)<roadW/2+2 || Math.hypot(cx,cz)<16) continue; addBox(cx,cz,1.6,1.6,1.5,0x33392c,{baseY:terrainHeight(cx,cz)}); }
   }
 
-  // SCATTER layout: the original — buildings + cover sprinkled across the arena.
+  // SCATTER layout: buildings + cover sprinkled across the arena. Now footprint-
+  // aware: each building rejects positions that would overlap an already-placed one
+  // (the old version interpenetrated freely, which is the #1 reason proc buildings
+  // read as "bad" — fused walls, doors sealed by a neighbour). A few retries per
+  // building keep the count up while guaranteeing clean separation.
   function buildScatter(H,i,rng){
     const nB=10+i*2;
     const FACES=['S','N','W','E'];
-    for(let b=0;b<nB;b++){ const bx=(rng()*2-1)*(H-12), bz=(rng()*2-1)*(H-12); if(Math.hypot(bx,bz)<16) continue;
+    for(let b=0;b<nB;b++){
+      const big = rng()<0.6;
+      const w = big ? 7+rng()*7 : 5+rng()*4;
+      const d = big ? 7+rng()*7 : 5+rng()*4;
+      const h = big ? 4+rng()*4 : 3.5+rng()*3;
       const col=0x363c44+Math.floor(rng()*0x0a0a0a);
       const face=FACES[Math.floor(rng()*4)];
-      if(rng()<0.6){ const w=7+rng()*7, d=7+rng()*7, h=4+rng()*4; addBuilding(bx,bz,w,d,h,rng,col,face); }
-      else {
-        // the smaller footprints used to be SEALED solid blocks (= a building with
-        // no way in). They're now real, enterable buildings too — only the loose
-        // 1u-thin lean-to next to them stays a pure cover panel.
-        const w=5+rng()*4, d=5+rng()*4, h=3.5+rng()*3; addBuilding(bx,bz,w,d,h,rng,col,face);
-        if(rng()>.4){ const lx=bx+(rng()*8-4), lz=bz+(rng()*8-4); addBox(lx,lz,3+rng()*3,1,1.4,0x2a2f33,{baseY:terrainHeight(lx,lz)}); } } }
+      // find a non-overlapping spot (off the spawn ring); skip this building if the
+      // arena's too crowded after a few tries (keeps geometry clean over count).
+      let bx,bz,placed=false;
+      for(let tr=0;tr<6;tr++){
+        bx=(rng()*2-1)*(H-12); bz=(rng()*2-1)*(H-12);
+        if(Math.hypot(bx,bz)<16) continue;
+        if(footprintFree(bx,bz,w,d,3)){ placed=true; break; }
+      }
+      if(!placed) continue;
+      addBuilding(bx,bz,w,d,h,rng,col,face);
+      // a loose lean-to cover panel beside the smaller ones (kept off other plots)
+      if(!big && rng()>.4){ const lx=bx+(rng()*8-4), lz=bz+(rng()*8-4);
+        if(footprintFree(lx,lz,3,1,1)) addBox(lx,lz,3+rng()*3,1,1.4,0x2a2f33,{baseY:terrainHeight(lx,lz)}); }
+    }
     // open-ground cover scatter — seated on the terrain so it reads as planted
-    for(let c=0;c<14;c++){ const cx=(rng()*2-1)*(H-8), cz=(rng()*2-1)*(H-8); if(Math.hypot(cx,cz)<10) continue; addBox(cx,cz,1.6,1.6,1.5,0x33392c,{baseY:terrainHeight(cx,cz)}); }
+    for(let c=0;c<14;c++){ const cx=(rng()*2-1)*(H-8), cz=(rng()*2-1)*(H-8); if(Math.hypot(cx,cz)<10) continue; if(!footprintFree(cx,cz,1.6,1.6,0.5)) continue; addBox(cx,cz,1.6,1.6,1.5,0x33392c,{baseY:terrainHeight(cx,cz)}); }
   }
 
   // ---------- RAID ----------
@@ -639,16 +847,43 @@ export const World = (function(){
     const prim=Objectives.primary&&Objectives.primary();
     if(prim&&prim.kind==='rescue') spawnHostage(rng,H,ex,ez);
     else if(prim&&prim.kind==='defuse') spawnBomb(rng,H,ex,ez);
-    Player.spawn(0,0,ang);
+    // SAFE SPAWN: drop in on clear, solid ground away from enemies (everything
+    // — geometry, crates, objective props, enemies — is already placed, so the
+    // clearance + enemy-distance checks see the final arena). Face toward centre.
+    const sp=findSafeSpawn(Player.RADIUS);
+    Player.spawn(sp.x, sp.z, sp.face!=null?sp.face:ang);
     S.setMode(MODE.RAID); document.getElementById('threats').style.display='block';
     Objectives.refreshLine();
     UI.refreshHUD(); Events.emit('threats:changed');
     UI.banner(`Sector ${String.fromCharCode(65+i)}`, `Stop ${i+1} · ${DATA.stops.count(i)} hostiles`); Audio.play('notify');
     if(!Input.locked && !Input.isTouch) GFX.dom.requestPointerLock();
   }
+  // dress a loot-crate body (already added via addBox, which owns the collider +
+  // the emissive-toggle material) so it READS as a crate, not a plain cube: corner
+  // braces, a lid rim, and plank seams on the faces. All purely visual (deco — no
+  // colliders/solids), so collision + the vault/mantle `top` metadata are unchanged.
+  function dressCrate(cx,cz,s,rare){
+    const wood = rare?0x5a4a66:0x6a5230;          // a touch lighter than the body so braces read
+    const brace = rare?0x3a3147:0x4a3a22;
+    const half=s/2;
+    // corner braces (vertical ribs at the 4 corners)
+    for(const dx of [-1,1]) for(const dz of [-1,1])
+      addBox(cx+dx*(half-0.06), cz+dz*(half-0.06), 0.14, 0.14, s, brace, {...deco, rough:.85, cast:false});
+    // top + bottom rim bands
+    addBox(cx,cz, s+0.04, s+0.04, 0.12, brace, {...deco, baseY:0, cast:false});
+    addBox(cx,cz, s+0.04, s+0.04, 0.12, brace, {...deco, baseY:s-0.12, cast:false});
+    // a couple of plank seams on each side face (thin recessed lines)
+    for(const f of [[0,half],[0,-half],[half,0],[-half,0]]){
+      const onX = f[0]!==0;
+      for(let p=1;p<=2;p++){ const y=s*p/3;
+        addBox(cx+f[0], cz+f[1], onX?0.06:s, 0.04, 0.04, wood, {...deco, baseY:y, cast:false}); }
+    }
+  }
   function crate(rng,rare){ let cx,cz,tr=0; do{cx=(rng()*2-1)*64;cz=(rng()*2-1)*64;tr++;}while(Math.hypot(cx,cz)<12&&tr<20);
-    const m=addBox(cx,cz,1.2,1.2,1.2, rare?0x4a3f5a:0x4a3f23, {uniqueMat:true});
+    const s=1.2;
+    const m=addBox(cx,cz,s,s,s, rare?0x4a3f5a:0x4a3f23, {uniqueMat:true});  // collidable body (owns collider + emissive)
     m.material.emissive=new T.Color(rare?0xc06fd8:0xe8a33d); m.material.emissiveIntensity=.15;
+    dressCrate(cx,cz,s,rare);                                               // wooden-crate dressing (visual only)
     const crateObj={pos:new T.Vector3(cx,1,cz),rare,mesh:m,opened:false};
     interactables.push({pos:crateObj.pos, radius:2.4, label:rare?'open rare cache':'open crate', crate:true, action:()=>{ if(crateObj.opened) return; crateObj.opened=true; m.material.emissiveIntensity=0; Loot.openCrate(crateObj); }}); }
   function makeExtract(x,z){
@@ -755,6 +990,6 @@ export const World = (function(){
     if(extractPos){ extractMesh.rotation.y+=dt; const d=Math.hypot(p.x-extractPos.x,p.z-extractPos.z);
       if(d<3 && Objectives.canExtract() && Input.keys[Input.code('interact')]){ extractHold+=dt; if(extractHold>=2) Raid.openExtractChoice(); } else extractHold=0; }
   }
-  return { reset, buildHub, buildRaid, moveActor, vaultProbe, spotClear, interact, interactAny, update, addInteract:(o)=>interactables.push(o),
+  return { reset, buildHub, buildRaid, moveActor, vaultProbe, spotClear, groundTopAt, findSafeSpawn, interact, interactAny, update, addInteract:(o)=>interactables.push(o),
            mapInfo:()=>({boxes:mapBoxes, extract:extractPos?{x:extractPos.x,z:extractPos.z}:null, size:74}), get solids(){return solids;} };
 })();
