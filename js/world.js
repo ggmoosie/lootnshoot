@@ -20,6 +20,7 @@ import { UI } from "./ui.js";
 import { Raid } from "./raid.js";
 import { Objectives } from "./objectives.js";
 import { Input } from "./input.js";
+import { pitchedRoof, WALL_T } from "./buildgeo.js";
 
 export const World = (function(){
   let colliders=[], solids=[], interactables=[], doors=[], mapBoxes=[];
@@ -563,36 +564,28 @@ export const World = (function(){
   // no colliders/solids, so LOS/cover/collision are unchanged. The building keeps a
   // separate solid ceiling slab at the wall top (added by the caller) for LOS.
   function addPitchedRoof(cx,cz,w,d,baseY,pal){
-    const along = w>=d ? 'x' : 'z';                            // ridge runs along the LONG axis
-    const span = along==='x' ? d : w;                          // dimension the slopes cover
-    const len  = along==='x' ? w : d;                          // dimension the ridge runs
-    const ridge=Math.min(2.4, Math.max(2.0, span*0.32));      // peak height above the eave
-    const eave=0.35;                                           // slope overhang past the wall (clean drip edge)
-    const half=span/2;
-    const slopeLen=Math.hypot(half+eave, ridge);              // eave-to-ridge run incl. overhang
-    const tilt=Math.atan2(ridge, half+eave);                  // panel pitch
+    // ALL the roof trig lives in buildgeo.pitchedRoof() (the single source of truth the
+    // numeric validator asserts against). Here we just turn its descriptors into meshes.
+    const R=pitchedRoof(cx,cz,w,d,baseY);
+    const along=R.along, len=R.len, slopeLen=R.slopeLen;
     const tMat=sharedMat(pal.roof||pal.trim,{rough:.88});
-    for(const side of [-1,1]){
-      // panel centre = midpoint of the sloped face; ends meet the ridge (centre,
-      // baseY+ridge) and the eave (±(half+eave), baseY). Rotating a flat slab about
-      // its own centre by `tilt` lands both ends exactly on those points.
+    for(const p of R.panels){
+      // depth (slopeLen) runs along the SPAN axis; rotating by p.rot tilts the slab so
+      // its OUTER end (eave) drops to baseY and its INNER end (ridge) rises to
+      // baseY+ridge — see buildgeo.pitchedRoof for the sign derivation (PR#34 had the
+      // sign inverted → eaves up / centre down = a butterfly roof that left the panels
+      // floating clear of the ridge cap).
       const slab=new T.Mesh(sharedBox(len, 0.14, slopeLen), tMat);
-      const offMid=side*(half+eave)/2, cyMid=baseY+ridge/2;
-      if(along==='x'){ slab.position.set(cx, cyMid, cz+offMid); slab.rotation.x=-side*tilt; }
-      else           { slab.position.set(cx+offMid, cyMid, cz); slab.rotation.z= side*tilt; }
+      if(along==='x'){ slab.position.set(p.x, p.cyMid, p.z+p.offMid); slab.rotation.x=p.rot; }
+      else           { slab.position.set(p.x+p.offMid, p.cyMid, p.z); slab.rotation.z=p.rot; }
       slab.castShadow=true; slab.receiveShadow=true; GFX.world.add(slab);
     }
     // ridge cap — a thin beam right along the peak so the two panels read as joined
-    const cap = along==='x'
-      ? new T.Mesh(sharedBox(len+0.1, 0.16, 0.3), tMat)
-      : new T.Mesh(sharedBox(0.3, 0.16, len+0.1), tMat);
-    cap.position.set(cx, baseY+ridge, cz); cap.castShadow=false; GFX.world.add(cap);
+    const cap=new T.Mesh(sharedBox(R.cap.w, R.cap.h, R.cap.d), tMat);
+    cap.position.set(R.cap.x, R.cap.y, R.cap.z); cap.castShadow=false; GFX.world.add(cap);
     // triangular gable end-caps (flush with the eaves, apex at the ridge)
     const gMat=sharedMat(pal.wall,{rough:.95});
-    for(const end of [-1,1]){
-      if(along==='x') gableTri(cx+end*len/2, cz, span, ridge, baseY, 'x', gMat);
-      else            gableTri(cx, cz+end*len/2, span, ridge, baseY, 'z', gMat);
-    }
+    for(const g of R.gables) gableTri(g.cx, g.cz, g.base, g.peak, g.baseY, g.faceAxis, gMat);
   }
 
   // scatter a few INTERIOR furniture props into a room cell — low tables, shelves,
@@ -896,9 +889,18 @@ export const World = (function(){
       addFence('x', jx, yw, jz+yd/2, gateSide===1, (rng()-.5)*yw*0.5); // top
       addFence('z', jx-yw/2, yd, jz, gateSide===2, (rng()-.5)*yd*0.5); // left
       addFence('z', jx+yw/2, yd, jz, gateSide===3, (rng()-.5)*yd*0.5); // right
-      // the building sits to one side of the yard, leaving open yard space
+      // the building sits to one side of the yard, leaving open yard space. CLAMP it
+      // fully INSIDE its own fenced yard (margin = fence inset + wall half-thickness +
+      // roof eave) so a wall can never poke through the fence into the NEXT plot, then
+      // reject the whole plot if its footprint still overlaps an already-placed
+      // building (the through-wall bug: a jittered neighbour fusing into this one).
       const bw=6+rng()*4, bd=6+rng()*4, bh=4+rng()*4;
-      const bx=jx+(rng()-.5)*(yw-bw-1)*0.6, bz=jz+(rng()-.5)*(yd-bd-1)*0.6;
+      const inset=0.8+WALL_T/2+0.4;                  // keep walls/eaves clear of the fence line
+      const rangeX=Math.max(0,(yw/2-inset)-bw/2), rangeZ=Math.max(0,(yd/2-inset)-bd/2);
+      let bx=jx+(rng()-.5)*2*rangeX, bz=jz+(rng()-.5)*2*rangeZ;
+      bx=Math.max(jx-rangeX, Math.min(jx+rangeX, bx));
+      bz=Math.max(jz-rangeZ, Math.min(jz+rangeZ, bz));
+      if(!footprintFree(bx,bz,bw,bd,2)) continue;    // would fuse into a neighbour → skip this plot's building
       const col=0x363c44+Math.floor(rng()*0x0a0a0a);
       // aim the entrance at the YARD GATE so the door is always reachable from
       // outside (through the gate, across the yard, into the building) — never
