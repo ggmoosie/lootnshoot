@@ -69,6 +69,11 @@ export const Weapons = (function(){
   }
 
   function modeOf(it){ const modes=DATA.weapons[it.def.weapon].modes||['auto']; if(!it.inst.mode||!modes.includes(it.inst.mode)) it.inst.mode=modes[0]; return it.inst.mode; }
+  // per-gun BURST length: how many rounds a single trigger-pull fires in 'burst'
+  // mode. Reads the weapon's `burst` field (DATA.weapons), defaulting to 3 so
+  // legacy burst guns keep the classic 3-round behavior. Lets a 2-round-burst gun
+  // feel genuinely different from a 3-round one (user: "N-round burst").
+  function burstCount(it){ const b=it&&DATA.weapons[it.def.weapon]&&DATA.weapons[it.def.weapon].burst; return (typeof b==='number'&&b>0)?Math.round(b):3; }
   function cycleMode(){ const it=activeItem(); if(!it) return; const modes=DATA.weapons[it.def.weapon].modes||['auto']; if(modes.length<2){ UI.toast(modes[0].toUpperCase()+' only','neu'); return; }
     const i=modes.indexOf(modeOf(it)); it.inst.mode=modes[(i+1)%modes.length]; Audio.play('ui'); UI.toast('Fire mode: '+it.inst.mode.toUpperCase(),'neu'); Events.emit('weapon:changed'); }
   function spawnTracer(a,b){ fxTracer(a,b,0xffd27a); }
@@ -80,69 +85,134 @@ export const Weapons = (function(){
   // the per-class BODY meshes live in their own group so refreshAttachments can swap
   // the silhouette when the held weapon class changes (the camera-attached `gun`
   // group, iron sights, muzzle, attachGroup + laserDot are built ONCE and kept).
-  let bodyGroup=null, lastBodyClass='';
-  // ---- PER-CLASS VIEWMODELS (feat/weapon-camera-feel) --------------------------
-  // Procedurally builds a DISTINCT first-person silhouette per weapon class so a
-  // pistol, SMG, rifle, shotgun and sniper don't all share one box. Same screen
-  // anchor (.22 right, lowered, bore at z≈-.55) so ADS/iron-sight alignment +
-  // sightLocal math are untouched — only the body shape varies. Box-built to match
-  // the existing low-poly look; geometry is fresh per swap but bounded + disposed.
+  let bodyGroup=null, lastBodyKey='';
+  // ---- PER-GUN VIEWMODELS (feat/weapon-camera-feel → feat/guns-attachments) -----
+  // Procedurally builds a DISTINCT first-person silhouette PER WEAPON KEY so an AK,
+  // a bullpup, a UMP and an LMG each read differently — not just 5 broad archetypes.
+  // Each gun resolves to one of 6 base archetypes (pistol/smg/shotgun/sniper/rifle/
+  // lmg) which is then RESHAPED by a per-gun spec (GUN_VM): receiver length/girth,
+  // barrel length/bore, grip rake, stock style, mag size/curve, plus optional flavor
+  // bits (carry handle, top rail, gas tube, drum, bullpup mag-behind-grip, etc.).
+  // The screen anchor stays fixed (.22 right, lowered, bore along -Z) and the SIGHT
+  // line stays on top of the receiver so the optics/iron-sight alignment + muzzleTip
+  // work the recent PR did is untouched — only the body shape varies. Box/cylinder-
+  // built to match the low-poly look; geometry is fresh per swap, bounded + disposed.
   function classFor(wk){
-    // collapse the weapon zoo into 5 visual archetypes
-    if(wk==='pistol'||wk==='machpistol') return 'pistol';
-    if(wk==='smg'||wk==='mp5') return 'smg';
-    if(wk==='shotgun') return 'shotgun';
-    if(wk==='dmr'||wk==='bolt') return 'sniper';
-    return 'rifle';  // carbine / ak / bullpup / lmg + any unknown
+    if(wk==='pistol'||wk==='machpistol'||wk==='revolver') return 'pistol';
+    if(wk==='smg'||wk==='mp5'||wk==='pdw'||wk==='ump') return 'smg';
+    if(wk==='shotgun'||wk==='autoshotgun') return 'shotgun';
+    if(wk==='dmr'||wk==='bolt'||wk==='battle') return 'sniper';
+    if(wk==='lmg') return 'lmg';
+    return 'rifle';  // carbine / ak / bullpup + any unknown
   }
+  // per-GUN proportion + flavor table. Every field is OPTIONAL — a gun absent here
+  // just renders its archetype default. Tuned in gun-local metres (X=.22 bore).
+  //   recL/recH = receiver length(z)/height(y);  barL/barR = barrel length/radius
+  //   gripRake  = grip Z-tilt (negative = raked back);  stock = 'full'|'stub'|'skel'|'none'
+  //   magH/magCurve = magazine height / banana curve;  flavor = string[] extra bits:
+  //     'handle'(carry handle), 'rail'(top rail), 'gas'(AK gas tube), 'drum'(LMG box),
+  //     'bullpup'(mag behind grip), 'cylinder'(revolver), 'compact'(shorty), 'heatshield'.
+  const GUN_VM = {
+    // --- rifles ---
+    carbine:{ recL:.5,  barL:.34, barR:.026, magH:.16, gripRake:-.1, stock:'full', flavor:['handle'] },
+    ak:     { recL:.52, barL:.4,  barR:.03,  magH:.2,  magCurve:.12, gripRake:-.16, stock:'full', flavor:['gas'] },
+    bullpup:{ recL:.56, barL:.3,  barR:.024, magH:.16, gripRake:-.05, stock:'none', flavor:['bullpup','rail'] },
+    burstcarb:{ recL:.5, barL:.46, barR:.024, magH:.18, gripRake:-.12, stock:'full', flavor:['handle','gas'] }, // long A2-style carbine
+    // --- SMGs ---
+    smg:    { recL:.34, barL:.24, barR:.02,  magH:.18, gripRake:-.2, stock:'stub' },
+    mp5:    { recL:.4,  barL:.3,  barR:.022, magH:.2,  magCurve:.06, gripRake:-.14, stock:'skel' },
+    ump:    { recL:.42, barL:.26, barR:.024, magH:.22, magCurve:.04, gripRake:-.12, stock:'skel', flavor:['rail'] },
+    pdw:    { recL:.3,  barL:.2,  barR:.018, magH:.14, gripRake:-.08, stock:'stub', flavor:['compact','rail'] },
+    // --- pistols ---
+    pistol:    { recL:.26, barL:.16, barR:.02,  magH:.13, gripRake:-.32, stock:'none' },
+    machpistol:{ recL:.3,  barL:.2,  barR:.02,  magH:.2,  gripRake:-.28, stock:'none', flavor:['compact'] },
+    revolver:  { recL:.24, barL:.22, barR:.022, magH:.0,  gripRake:-.34, stock:'none', flavor:['cylinder'] },
+    // --- shotguns ---
+    shotgun:    { recL:.46, barL:.5,  barR:.03,  gripRake:-.22, stock:'full', flavor:['pump'] },
+    autoshotgun:{ recL:.48, barL:.42, barR:.03,  magH:.22, magCurve:.05, gripRake:-.18, stock:'full', flavor:['heatshield'] },
+    // --- snipers / DMRs ---
+    dmr:    { recL:.56, barL:.5,  barR:.02,  magH:.18, gripRake:-.12, stock:'full', flavor:['rail'] },
+    battle: { recL:.6,  barL:.46, barR:.022, magH:.2,  magCurve:.08, gripRake:-.14, stock:'full', flavor:['rail'] },
+    bolt:   { recL:.6,  barL:.6,  barR:.018, magH:.12, gripRake:-.12, stock:'riser', flavor:[] },
+    // --- LMG ---
+    lmg:    { recL:.56, barL:.5,  barR:.03,  gripRake:-.12, stock:'full', flavor:['drum','heatshield','rail'] },
+  };
   function mesh(geo, mat, x,y,z, rx,ry,rz){ const m=new T.Mesh(geo, mat||VM_DARK); m.position.set(x,y,z); if(rx)m.rotation.x=rx; if(ry)m.rotation.y=ry; if(rz)m.rotation.z=rz; return m; }
-  function buildBody(cls){
-    const grp=new T.Group(); const X=.22;
-    const add=(...m)=>grp.add(...m);
+  // build a distinct silhouette for weapon key `wk`. `cls` is its archetype; `sp` is
+  // its per-gun spec (GUN_VM[wk] or {}). Proportions resolve from the spec with
+  // archetype-sane fallbacks; flavor bits add extra recognisable furniture.
+  function buildBody(wk, cls, sp){
+    sp = sp||{}; const grp=new T.Group(); const X=.22; const add=(...m)=>grp.add(...m);
+    const fl = sp.flavor||[]; const has=t=>fl.indexOf(t)>=0;
+    // archetype default proportions (used where the spec omits a field)
+    const D = cls==='pistol' ? {recL:.26,recH:.085,barL:.16,barR:.02,recZ:-.5}
+            : cls==='smg'    ? {recL:.36,recH:.11, barL:.26,barR:.022,recZ:-.5}
+            : cls==='shotgun'? {recL:.46,recH:.1,  barL:.5, barR:.03, recZ:-.55}
+            : cls==='sniper' ? {recL:.58,recH:.11, barL:.55,barR:.02, recZ:-.6}
+            : cls==='lmg'    ? {recL:.56,recH:.13, barL:.5, barR:.03, recZ:-.58}
+            :                  {recL:.5, recH:.12, barL:.34,barR:.026,recZ:-.55}; // rifle
+    const recL=sp.recL||D.recL, recH=sp.recH||D.recH, barL=sp.barL||D.barL, barR=sp.barR||D.barR;
+    const recZ=D.recZ, recY=cls==='pistol'?-.165:-.175;
+    // RECEIVER (the body box). steel; girth varies by archetype/spec.
+    const recW = cls==='pistol'?.07 : cls==='shotgun'?.085 : cls==='lmg'?.09 : cls==='smg'?.075 : .085;
+    add(mesh(new T.BoxGeometry(recW,recH,recL), VM_STEEL, X,recY,recZ));
+    // BARREL — pistols use a stubby box shroud; everything else a cylinder running
+    // forward. barrelZ centres the barrel ahead of the receiver front.
+    const recFrontZ = recZ - recL/2;            // forward face of the receiver
+    const barZ = recFrontZ - barL/2;
     if(cls==='pistol'){
-      // compact slide + short barrel + steep grip; sits a touch higher/closer
-      add(mesh(new T.BoxGeometry(.07,.085,.26), VM_STEEL, X,-.165,-.5));
-      add(mesh(new T.BoxGeometry(.045,.05,.16), VM_DARK,  X,-.155,-.66));   // short barrel shroud
-      add(mesh(new T.BoxGeometry(.06,.15,.07),  VM_DARK,  X,-.27,-.46, -.32)); // angled grip
-    } else if(cls==='smg'){
-      // small boxy receiver, stubby barrel, vertical-ish grip + a hint of a stock
-      add(mesh(new T.BoxGeometry(.075,.11,.34), VM_STEEL, X,-.175,-.5));
-      add(mesh(new T.BoxGeometry(.04,.05,.24),  VM_DARK,  X,-.165,-.78));
-      add(mesh(new T.BoxGeometry(.065,.155,.075),VM_DARK, X,-.275,-.43, -.18));
-      add(mesh(new T.BoxGeometry(.05,.06,.14),  VM_DARK,  X,-.165,-.34));   // collapsed stub stock
-    } else if(cls==='shotgun'){
-      // chunky receiver, fat barrel + a pump under the barrel, full stock
-      add(mesh(new T.BoxGeometry(.085,.1,.46),  VM_STEEL, X,-.175,-.55));
-      add(mesh(new T.CylinderGeometry(.03,.03,.5,10), VM_DARK, X,-.15,-.86, Math.PI/2));      // wide barrel
-      add(mesh(new T.BoxGeometry(.045,.05,.16), VM_DARK,  X,-.225,-.78));   // pump fore-end
-      add(mesh(new T.BoxGeometry(.06,.16,.08),  VM_DARK,  X,-.28,-.44, -.22));
-      add(mesh(new T.BoxGeometry(.055,.085,.24),VM_DARK,  X,-.185,-.26));   // full stock
-    } else if(cls==='sniper'){
-      // long thin receiver, very long barrel, prominent cheek-riser stock
-      add(mesh(new T.BoxGeometry(.07,.11,.6),   VM_STEEL, X,-.17,-.6));
-      add(mesh(new T.CylinderGeometry(.018,.018,.6,10), VM_DARK, X,-.155,-1.06, Math.PI/2)); // long barrel
-      add(mesh(new T.BoxGeometry(.06,.165,.075),VM_DARK,  X,-.28,-.46, -.12));
-      add(mesh(new T.BoxGeometry(.06,.12,.3),   VM_DARK,  X,-.2,-.2));       // long stock w/ riser
-      add(mesh(new T.BoxGeometry(.05,.04,.14),  VM_DARK,  X,-.115,-.22));    // cheek riser
-    } else { // rifle
-      // mid receiver + handguard + barrel + carry-handle-ish top + standard grip/stock
-      add(mesh(new T.BoxGeometry(.085,.12,.5),  VM_STEEL, X,-.18,-.55));
-      add(mesh(new T.BoxGeometry(.05,.06,.34),  VM_DARK,  X,-.17,-.85));     // handguard/barrel bar
-      add(mesh(new T.BoxGeometry(.07,.16,.08),  VM_DARK,  X,-.28,-.42, -.1));// grip
-      add(mesh(new T.BoxGeometry(.055,.09,.2),  VM_DARK,  X,-.185,-.24));    // stock
+      add(mesh(new T.BoxGeometry(barR*2.2,recH*0.6,barL), VM_DARK, X,recY+.01,barZ));
+    } else {
+      add(mesh(new T.CylinderGeometry(barR,barR,barL,10), VM_DARK, X,recY+.02,barZ, Math.PI/2));
     }
+    // GRIP — angled down/back; rake from spec. Pistols sit the grip under the body.
+    const gripRake = sp.gripRake!=null?sp.gripRake : (cls==='pistol'?-.32:-.12);
+    const gripZ = cls==='pistol'? recZ+.04 : has('bullpup')? recZ-.06 : recZ+.08;
+    add(mesh(new T.BoxGeometry(.065,cls==='pistol'?.15:.16,.075), VM_DARK, X,recY-.105,gripZ, gripRake));
+    // MAGAZINE — height/curve from spec (revolver has none → cylinder flavor instead).
+    // Bullpups put the mag BEHIND the grip; everything else in front under the receiver.
+    if(sp.magH!==0 && !has('cylinder')){
+      const magH = sp.magH!=null?sp.magH : .16; const curve=sp.magCurve||0;
+      const magZ = has('bullpup')? recZ-.18 : recZ+.02;
+      add(mesh(new T.BoxGeometry(.05,magH,.05), VM_DARK, X, recY-.06-magH/2, magZ, curve?-curve:-.06));
+      if(curve){ // banana-curve guns get a second canted segment for the curve read
+        add(mesh(new T.BoxGeometry(.05,magH*0.5,.05), VM_DARK, X, recY-.05-magH*0.8, magZ-magH*0.18, -curve*2.0));
+      }
+    }
+    // STOCK — full/stub/skel/riser/none. Bullpups + most pistols carry none.
+    const stock = sp.stock!=null?sp.stock : (cls==='pistol'?'none':'full');
+    const stockZ = recZ + recL/2 + .04;
+    if(stock==='full')  add(mesh(new T.BoxGeometry(.055,.09,.22), VM_DARK, X,recY+.01,stockZ+.06));
+    else if(stock==='stub') add(mesh(new T.BoxGeometry(.05,.06,.14), VM_DARK, X,recY+.01,stockZ));
+    else if(stock==='skel'){ // skeleton stock = two thin rails + a butt pad
+      add(mesh(new T.BoxGeometry(.012,.012,.2), VM_DARK, X-.012,recY+.02,stockZ+.05));
+      add(mesh(new T.BoxGeometry(.012,.012,.2), VM_DARK, X+.012,recY-.04,stockZ+.05));
+      add(mesh(new T.BoxGeometry(.05,.08,.03),  VM_DARK, X,recY-.01,stockZ+.14));
+    } else if(stock==='riser'){ // bolt-gun cheek-riser stock
+      add(mesh(new T.BoxGeometry(.06,.12,.3),  VM_DARK, X,recY+.0,stockZ+.06));
+      add(mesh(new T.BoxGeometry(.05,.04,.14), VM_DARK, X,recY+.07,stockZ));   // cheek riser
+    }
+    // ---- FLAVOR bits: recognisable per-gun furniture ----
+    if(has('handle'))  add(mesh(new T.BoxGeometry(.012,.04,.18), VM_DARK, X,recY+recH/2+.04,recZ+.02)); // carry handle
+    if(has('rail'))    add(mesh(new T.BoxGeometry(.03,.018,recL*0.7), VM_DARK, X,recY+recH/2+.012,recZ)); // top rail
+    if(has('gas'))     add(mesh(new T.CylinderGeometry(.012,.012,barL*0.7,8), VM_DARK, X,recY+.07,barZ+.04, Math.PI/2)); // AK gas tube
+    if(has('pump'))    add(mesh(new T.BoxGeometry(.045,.05,.16), VM_DARK, X,recY-.05,barZ+.04)); // shotgun pump
+    if(has('heatshield')) add(mesh(new T.CylinderGeometry(barR*1.4,barR*1.4,barL*0.6,8,1,true), VM_DARK, X,recY+.02,barZ, Math.PI/2)); // vented shroud
+    if(has('drum'))    add(mesh(new T.BoxGeometry(.07,.16,.16), VM_DARK, X,recY-.14,recZ+.04)); // LMG box/ammo can
+    if(has('cylinder'))add(mesh(new T.CylinderGeometry(.04,.04,.06,12), VM_STEEL, X,recY,recZ+.02, 0,0,Math.PI/2)); // revolver cylinder
+    if(has('compact')) { /* shorty: nothing extra, the short recL/barL already read */ }
     return grp;
   }
   function refreshBody(it){
-    const cls = it ? classFor(it.def.weapon) : '';
-    if(cls===lastBodyClass) return; lastBodyClass=cls;
+    const wk = it ? it.def.weapon : '';
+    if(wk===lastBodyKey) return; lastBodyKey=wk;
     if(bodyGroup){ // dispose the old silhouette's geometry (materials are shared)
       gun.remove(bodyGroup);
       bodyGroup.traverse(o=>{ if(o.geometry){ try{o.geometry.dispose();}catch(e){} } });
       bodyGroup=null;
     }
-    if(!cls) return;
-    bodyGroup=buildBody(cls); gun.add(bodyGroup);
+    if(!wk) return;
+    bodyGroup=buildBody(wk, classFor(wk), GUN_VM[wk]); gun.add(bodyGroup);
   }
 
   function buildViewmodel(){
@@ -257,16 +327,124 @@ export const Weapons = (function(){
     // BARREL-TIP tracking: start at the bare muzzle and push the anchor forward to
     // the END of whatever barrel / muzzle device is fitted, so the tracer + flash
     // always leave the physical front of the gun. (Negative Z = forward.)
+    // ---- ADVANCED ATTACHMENT SHAPES (feat/guns-attachments) ----
+    // The non-optic devices below are built as DETAILED procedural models (multi-part
+    // cylinders/torii/box clusters) that vary per attachment id, not plain boxes. A
+    // small helper `aAdd` parents a fresh mesh into attachGroup; geometry is created
+    // per-rebuild but bounded (rebuild only fires when the attachment SIGNATURE
+    // changes — lastAttachSig). All reuse the shared `dark` material (no per-mesh mat).
+    const aAdd=(geo,x,y,z,rx,ry,rz)=>{ const m=new T.Mesh(geo,dark); m.position.set(x,y,z); if(rx)m.rotation.x=rx; if(ry)m.rotation.y=ry; if(rz)m.rotation.z=rz; attachGroup.add(m); return m; };
     let tipZ=-1.05;
-    if(att.muzzle){ const sup=att.muzzle==='att_suppressor'; const dev=new T.Mesh(new T.CylinderGeometry(sup?.04:.05,sup?.04:.05,sup?.2:.1,10), dark); dev.rotation.x=Math.PI/2; dev.position.set(.22,-.17,sup?-1.0:-.95); attachGroup.add(dev);
-      tipZ=Math.min(tipZ, sup?-1.10:-1.0); }
-    // foregrip (and legacy 'tactical' grips from older saves render the same)
-    if(att.foregrip||att.tactical){ const fg=new T.Mesh(new T.BoxGeometry(.05,.1,.06), dark); fg.position.set(.22,-.27,-.72); attachGroup.add(fg); }
-    if(att.stock){ const sk=new T.Mesh(new T.BoxGeometry(.06,.08,.22), dark); sk.position.set(.22,-.18,-.18); attachGroup.add(sk); }
-    if(att.barrel){ const lng=att.barrel==='att_barrel_long'; const br=new T.Mesh(new T.CylinderGeometry(.022,.022,lng?.34:.12,8), dark); br.rotation.x=Math.PI/2; br.position.set(.22,-.17,lng?-1.1:-.92); attachGroup.add(br);
-      tipZ=Math.min(tipZ, lng?-1.27:-.98); }
-    if(att.magazine){ const ext=att.magazine==='att_mag_ext'; const mg=new T.Mesh(new T.BoxGeometry(.05,ext?.2:.12,.05), dark); mg.position.set(.22,ext?-.36:-.32,-.46); attachGroup.add(mg); }
-    if(att.laser){ const em=new T.Mesh(new T.BoxGeometry(.03,.03,.07), new T.MeshStandardMaterial({color:0x330000,emissive:0xff2200,emissiveIntensity:.9})); em.position.set(.15,-.2,-.7); attachGroup.add(em); }
+    if(att.muzzle){
+      const id=att.muzzle, sup=id==='att_suppressor';
+      if(sup){ // long fat can with end cap rings
+        aAdd(new T.CylinderGeometry(.04,.04,.2,12), .22,-.17,-1.0, Math.PI/2);
+        aAdd(new T.TorusGeometry(.04,.006,8,16), .22,-.17,-1.1);
+        tipZ=Math.min(tipZ,-1.10);
+      } else if(id==='att_brake'||id==='att_magbrake'||id==='att_lincomp'){
+        // muzzle brake/comp: a slotted block — central cylinder + side baffle fins
+        aAdd(new T.CylinderGeometry(.05,.045,.1,10), .22,-.17,-.95, Math.PI/2);
+        aAdd(new T.BoxGeometry(.11,.02,.06), .22,-.155,-.94);   // top baffle
+        aAdd(new T.BoxGeometry(.11,.02,.06), .22,-.185,-.94);   // bottom baffle
+        tipZ=Math.min(tipZ,-1.0);
+      } else if(id==='att_comp'){
+        // compensator: a stepped two-stage cone with vent ports
+        aAdd(new T.CylinderGeometry(.046,.052,.09,10), .22,-.17,-.95, Math.PI/2);
+        aAdd(new T.BoxGeometry(.015,.03,.05), .22,-.14,-.95);   // top vent
+        tipZ=Math.min(tipZ,-1.0);
+      } else if(id==='att_choke'){
+        // shotgun choke: a tapered narrowing cone at the muzzle
+        aAdd(new T.CylinderGeometry(.034,.05,.12,12), .22,-.17,-.96, Math.PI/2);
+        tipZ=Math.min(tipZ,-1.02);
+      } else if(id==='att_duckbill'){
+        // duckbill: a flattened horizontal spreader lip
+        aAdd(new T.CylinderGeometry(.05,.05,.06,10), .22,-.17,-.95, Math.PI/2);
+        aAdd(new T.BoxGeometry(.14,.012,.05), .22,-.17,-1.0);   // wide flat lip
+        tipZ=Math.min(tipZ,-1.0);
+      } else if(id==='att_flashhider'){
+        // flash hider: a pronged birdcage — a ring + 3 forward prongs
+        aAdd(new T.CylinderGeometry(.04,.04,.1,10,1,true), .22,-.17,-.96, Math.PI/2);
+        for(let p=0;p<3;p++){ const a=p/3*Math.PI*2; aAdd(new T.BoxGeometry(.008,.008,.06), .22+Math.cos(a)*.035,-.17+Math.sin(a)*.035,-1.0); }
+        tipZ=Math.min(tipZ,-1.02);
+      } else { // generic muzzle device
+        aAdd(new T.CylinderGeometry(.05,.05,.1,10), .22,-.17,-.95, Math.PI/2);
+        tipZ=Math.min(tipZ,-1.0);
+      }
+    }
+    // foregrip — varied per id (vert / angled / bipod legs / stubby / skeleton / handstop)
+    if(att.foregrip||att.tactical){
+      const id=att.foregrip||att.tactical;
+      if(id==='att_bipod'){ // deployed bipod: a mount + two splayed legs
+        aAdd(new T.BoxGeometry(.04,.04,.06), .22,-.24,-.78);
+        aAdd(new T.CylinderGeometry(.006,.006,.16,6), .19,-.31,-.78, 0,0,.5);
+        aAdd(new T.CylinderGeometry(.006,.006,.16,6), .25,-.31,-.78, 0,0,-.5);
+      } else if(id==='att_anglegrip'){ // angled grip: a forward-raked slab
+        aAdd(new T.BoxGeometry(.045,.1,.06), .22,-.27,-.72, -.5);
+      } else if(id==='att_stubby'){ // stubby: short fat nub
+        aAdd(new T.CylinderGeometry(.026,.03,.07,8), .22,-.255,-.72);
+      } else if(id==='att_skelgrip'){ // skeleton VG: a thin ring + post
+        aAdd(new T.TorusGeometry(.022,.005,6,12), .22,-.275,-.72, Math.PI/2);
+        aAdd(new T.BoxGeometry(.012,.06,.012), .22,-.255,-.72);
+      } else if(id==='att_handstop'){ // handstop: a low forward fin
+        aAdd(new T.BoxGeometry(.04,.04,.05), .22,-.24,-.76, -.6);
+      } else { // vertical grip (default / att_grip)
+        aAdd(new T.CylinderGeometry(.022,.026,.1,8), .22,-.27,-.72);
+      }
+    }
+    // stock — varied per id (tactical / skeleton / pdw / wire / heavy pad / folding)
+    if(att.stock){
+      const id=att.stock;
+      if(id==='att_stock_light'||id==='att_stock_wire'){ // wire/skeleton: thin rails + pad
+        aAdd(new T.BoxGeometry(.01,.01,.2), .21,-.16,-.16);
+        aAdd(new T.BoxGeometry(.01,.01,.2), .23,-.2,-.16);
+        aAdd(new T.BoxGeometry(.05,.07,.025), .22,-.18,-.06);
+      } else if(id==='att_stock_pdw'){ // PDW: a short rail + small butt
+        aAdd(new T.BoxGeometry(.03,.03,.14), .22,-.18,-.12);
+        aAdd(new T.BoxGeometry(.05,.08,.02), .22,-.18,-.05);
+      } else if(id==='att_stock_fold'){ // folding: a short side-canted bar
+        aAdd(new T.BoxGeometry(.04,.05,.16), .22,-.18,-.16, 0,.3);
+      } else if(id==='att_stock_heavy'){ // recoil pad: a fat butt with a soft pad cap
+        aAdd(new T.BoxGeometry(.07,.1,.2), .22,-.18,-.18);
+        aAdd(new T.BoxGeometry(.075,.11,.03), .22,-.18,-.07);
+      } else { // tactical (default)
+        aAdd(new T.BoxGeometry(.06,.08,.22), .22,-.18,-.18);
+      }
+    }
+    if(att.barrel){
+      const id=att.barrel; const lng=(id==='att_barrel_long'||id==='att_barrel_match'||id==='att_barrel_dmr');
+      const len = id==='att_barrel_dmr'?.38 : id==='att_barrel_match'?.36 : lng?.34 : id==='att_barrel_carbine'?.1 : .12;
+      const r = id==='att_barrel_dmr'?.018 : .022;
+      aAdd(new T.CylinderGeometry(r,r,len,8), .22,-.17,-1.04-len/2+.05, Math.PI/2);
+      if(id==='att_barrel_dmr'||id==='att_barrel_match'){ // fluted: 3 thin grooves read as a match barrel
+        for(let f=0;f<3;f++){ const a=f/3*Math.PI*2; aAdd(new T.BoxGeometry(.004,.004,len*0.8), .22+Math.cos(a)*r,-.17+Math.sin(a)*r,-1.04-len/2+.05); }
+      }
+      tipZ=Math.min(tipZ, -1.0-len*0.9);
+    }
+    if(att.magazine){
+      const id=att.magazine;
+      if(id==='att_mag_drum'||id==='att_mag_minidrum'){ // drum: a fat disc on a short neck
+        const rr=id==='att_mag_drum'?.1:.075;
+        aAdd(new T.CylinderGeometry(rr,rr,.06,16), .22,-.34,-.46, Math.PI/2);
+        aAdd(new T.BoxGeometry(.05,.08,.05), .22,-.27,-.46);   // feed neck
+      } else if(id==='att_mag_ext'||id==='att_mag_box'){ // extended/box: a tall straight mag
+        const h=id==='att_mag_box'?.24:.2; aAdd(new T.BoxGeometry(.05,h,.055), .22,-.28-h/2,-.46, -.06);
+      } else if(id==='att_mag_32'){ // 32-rnd: a medium curved mag
+        aAdd(new T.BoxGeometry(.05,.18,.05), .22,-.4,-.46, -.12);
+        aAdd(new T.BoxGeometry(.05,.08,.05), .22,-.33,-.43, -.28);   // curve segment
+      } else { // quickdraw / generic: a standard mag with a baseplate tab
+        aAdd(new T.BoxGeometry(.05,.14,.05), .22,-.36,-.46, -.06);
+        aAdd(new T.BoxGeometry(.06,.02,.06), .22,-.43,-.45);   // baseplate
+      }
+    }
+    if(att.laser){
+      const id=att.laser; const irLas=id==='att_laser_ir';
+      const emCol = irLas?0x002a33:0x330000, emEmis = irLas?0x22ddff:0xff2200;
+      // laser pod: an emissive box with a tiny lens nub on the front
+      const pod=new T.Mesh(new T.BoxGeometry(.03,.03,.07), new T.MeshStandardMaterial({color:emCol,emissive:emEmis,emissiveIntensity:.9}));
+      pod.position.set(.15,-.2,-.7); attachGroup.add(pod);
+      const lens=new T.Mesh(new T.CylinderGeometry(.008,.008,.012,8), new T.MeshStandardMaterial({color:emCol,emissive:emEmis,emissiveIntensity:1.3}));
+      lens.rotation.x=Math.PI/2; lens.position.set(.15,-.2,-.74); attachGroup.add(lens);
+    }
     // pin the firing anchors to the live geometry (gun-local; world pose read per-frame):
     if(muzzleTip) muzzleTip.position.set(.22,-.17,tipZ);   // barrel tip / compensator
     if(muzzle) muzzle.position.set(.22,-.17,tipZ);          // flash sprite rides the tip
@@ -822,7 +1000,7 @@ export const Weapons = (function(){
     // through while drawn so burst/auto don't queue against a put-away weapon.
     const wantFire = !holstered && Input.firing && (Input.locked||Input.isTouch) && !!it;
     const mode = it?modeOf(it):'auto';
-    if(wantFire && !prevFire){ if(mode==='semi') fire(); else if(mode==='burst') burstLeft=3; }
+    if(wantFire && !prevFire){ if(mode==='semi') fire(); else if(mode==='burst') burstLeft=burstCount(it); }
     if(mode==='auto' && wantFire) fire();
     if(burstLeft>0){ if(fire()) burstLeft--; if(!Input.firing && !Input.isTouch) burstLeft=0; }
     prevFire=wantFire;
