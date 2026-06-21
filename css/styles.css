@@ -141,6 +141,18 @@
   .bpopt.rem{color:var(--bad);} .bpopt.rem:hover{background:rgba(216,69,62,.12);color:var(--bad);}
   .bpopt.sel{color:var(--amber);} .bpopt.none{color:var(--dim);cursor:default;}
   .bpopt .bpic{font-size:16px;}
+  /* gunsmith build-flow: full-catalog dropdown rows carry a name + a price/owned tag */
+  .bpopt .bpnm2{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .bpprice{font-family:var(--mono);font-size:11px;color:var(--amber);margin-left:auto;flex:none;}
+  .bpprice.owned{color:var(--go);}
+  /* BUILD GUN bar pinned under the stat readout */
+  .bpbuildbar{display:flex;align-items:center;justify-content:space-between;gap:14px;
+    max-width:600px;margin:14px auto 0;padding-top:12px;border-top:1px solid var(--line);}
+  .bpbill{font-family:var(--mono);font-size:12px;color:var(--dim);}
+  .bpbill b{color:var(--amber);} .bpbill b.no{color:var(--bad);}
+  .btn.build{background:rgba(87,192,107,.10);border-color:var(--go);color:var(--go);font-weight:600;}
+  .btn.build:hover{background:rgba(87,192,107,.2);}
+  .btn.build.disabled{background:none;border-color:var(--line);color:var(--dim);}
   .bpstats{display:flex;flex-wrap:wrap;gap:6px;max-width:600px;margin:12px auto 0;}
   .bpstat{flex:1 1 80px;border:1px solid #1c2228;border-radius:6px;background:#0c1014;padding:6px 8px;text-align:center;}
   .bpstat .sl{display:block;font-family:var(--mono);font-size:8px;letter-spacing:1px;color:var(--dim);text-transform:uppercase;}
