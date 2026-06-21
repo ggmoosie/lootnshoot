@@ -17,6 +17,16 @@ Index of every top-level exported symbol in `js/*.js`, grouped by file.
 
 - `Audio` (const) — js/audio.js:14 — audio.js — SYS: Audio. Thin WebAudio blip layer. Event-driven so real SFX can drop in later. No-ops safely where WebAudio is unavailable. POSITIONAL AUDIO (feat/audio-minimap): every blip can be placed in the world. `play(name, pos)` / `callout(name, pos)` accept an optional THREE.Vector3 (or any {x,y,z}); when given, the sound is routed through a PannerNode so it pans L/R by direction and attenuates by distance from the listener (the camera). Calls WITHOUT a position stay exactly as before — a plain mono blip on the master bus — so every existing caller (UI clicks, pickups, player steps) is unaffected. `setListener(pos, fwd)` syncs the WebAudio listener to the camera each frame; the loop calls it. Everything degrades gracefully: no WebAudio, no PannerNode, or a bad position all fall back to a plain mono blip.
 
+## js/buildgeo.js
+
+- `DOOR_GW` (const) — js/buildgeo.js:11
+- `footprintFree` (function) — js/buildgeo.js:138 — ---- LAYOUT OVERLAP TEST ---------------------------------------------------- Mirror of world.js footprintFree(): true when an axis-aligned (cx,cz,w,d) plot, padded by `pad`, does NOT overlap any rect already in `placed`. Used by EVERY layout generator before it commits a building, so no two buildings interpenetrate (the through-wall bug). `placed` is an array of {minX,maxX,minZ,maxZ}.
+- `footprintRect` (function) — js/buildgeo.js:147
+- `pitchedRoof` (function) — js/buildgeo.js:50 — ---- PITCHED ROOF GEOMETRY ------------------------------------------------- The single source of truth for the pitched roof. Given a building footprint (cx,cz,w,d), the wall-top height it sits on (baseY) and a peak, returns a fully described roof: two slope panels (each a flat slab rotated about an axis), a ridge cap, and two gable triangles — plus, for every piece, its WORLD-SPACE axis-aligned bounding box so the validator can assert coverage / ridge meeting / eave height without re-deriving any trig. CORRECTNESS (the bug PR#34 missed): a flat slab whose depth runs along +span and is rotated about the perpendicular axis must tilt so its OUTER end (the eave) drops to baseY and its INNER end (the ridge) rises to baseY+ridge. That requires the +side panel to rotate by +tilt about its axis and the -side by -tilt (the old code used the opposite sign, which lifted the eaves and dropped the centre — an inverted "butterfly" roof whose panels floated away from the ridge cap).
+- `ROOF_EAVE` (const) — js/buildgeo.js:12
+- `WALL_T` (const) — js/buildgeo.js:10 — buildgeo.js — PURE building geometry math (NO THREE, NO DOM). Single source of truth shared by world.js (which turns these numbers into meshes/colliders) and scripts/geo-validate.mjs (which asserts on them). Keeping the math here means the validator can never drift from what the game actually builds. All functions are side-effect-free: they take dimensions and return plain descriptors (positions, sizes, world-space AABBs). world.js consumes them; the validator AABB-checks them. If you change roof/wall geometry, change it HERE.
+- `wallSegments` (function) — js/buildgeo.js:20 — ---- WALL SEGMENTS AROUND A DOORWAY GAP ----------------------------------- Mirror of world.js wallWithGap(): a straight wall (along 'x' or 'z') with a gap punched in it, returned as 0..2 solid segments. Each segment is an addBox-style descriptor {x,z,w,d} (full-height; caller supplies h). `fx` is the wall's centre on its run axis, `fixed` the perpendicular coordinate, `len` its length, `gap` the gap centre offset from the wall centre, `gw` the gap width.
+
 ## js/crafting.js
 
 - `Crafting` (const) — js/crafting.js:8
@@ -152,5 +162,5 @@ _no top-level exports_
 
 ## js/world.js
 
-- `World` (const) — js/world.js:24
+- `World` (const) — js/world.js:25
 
