@@ -11,6 +11,7 @@ import { Progression } from "./progression.js";
 import { Player } from "./player.js";
 import { Enemies } from "./enemies.js";
 import { Loot } from "./loot.js";
+import { Inventory } from "./inventory.js";
 import { Projectiles } from "./projectiles.js";
 import { Harvest } from "./harvest.js";
 import { Allies } from "./allies.js";
@@ -352,7 +353,14 @@ export const World = (function(){
   // The collider is a thin closed panel exactly over the gap (cleared when the
   // door opens), so 2D-AABB collision + AI pathing read an OPEN door as passable
   // and a CLOSED one as a wall — orientation-agnostic and gap-tight.
-  function addDoor(x,z,axis,gw,h,pal){
+  // LOCKED DOORS: a door may be born locked behind a key. `lock` is the item id of
+  // the required key (e.g. 'key_office'); null/undefined = a normal free door. A
+  // locked leaf is tinted with a brass strip + reads "locked — needs <key>" in the
+  // prompt until the player carries the key, at which point interacting CONSUMES one
+  // key, unlocks the door permanently, and swings it open. Crash-proof: a missing
+  // key def or no run just shows the locked prompt; it never throws or seals an
+  // objective (objectives + extract live in the open, not behind building doors).
+  function addDoor(x,z,axis,gw,h,pal,lock){
     axis=axis||'x'; gw=gw||2.6; h=h||4; pal=pal||{wall:0x3a414a,trim:0x6a727c};
     const t=0.4, leafW=gw-0.12, leafH=Math.min(h-0.2, 3.0), jamb=0.16;
     const pivot=new T.Group(); pivot.position.set(x,0,z); GFX.world.add(pivot);
@@ -377,11 +385,50 @@ export const World = (function(){
       addBox(x, z+gw/2, t+0.06, gw+jamb, 0.2,     pal.trim, {...deco, baseY:leafH, cast:false}); // header
     }
     leaf.castShadow=true; colliders.push(col);
-    const door={pivot,col,open:false,axis};
+    const door={pivot,col,open:false,axis,locked:!!lock,key:lock||null,leaf};
+    // a locked leaf wears a brass lock plate so it reads as gated at a glance
+    if(door.locked){
+      const plate=new T.Mesh(new T.BoxGeometry(0.22,0.34,0.06),
+        new T.MeshStandardMaterial({color:0xb8923a,metalness:.7,roughness:.35,emissive:0x4a3a10,emissiveIntensity:.4}));
+      plate.position.set(leafW-0.45, leafH/2, 0.12); pivot.add(plate); door.plate=plate;
+      leaf.material=leaf.material.clone(); leaf.material.color.set(0x4a3b2a);   // darker, "sealed" leaf
+    }
     doors.push(door);
-    interactables.push({pos:prompt, radius:2.6, label:'open door', action:()=>toggleDoor(door)});
+    const inter={pos:prompt, radius:2.6, label:doorLabel(door), key:'interact', action:()=>toggleDoor(door,inter)};
+    interactables.push(inter);
   }
-  function toggleDoor(d){ d.open=!d.open; d.col.open=d.open; d.pivot.rotation.y=(d.axis==='z'?Math.PI/2:0)+(d.open?-Math.PI/2:0); }
+  // does the player CURRENTLY carry (in their raid rig/backpack, any nested grid) at
+  // least one of item `id`? Crash-proof: no run / no equip → false.
+  function carryingKey(id){
+    if(!id) return false;
+    for(const g of Inventory.carried()){ for(const grid of Inventory.nestedGrids(g)){ if(grid.count(id)>0) return true; } }
+    return false;
+  }
+  // consume ONE of item `id` from the player's carried grids; true if one was spent.
+  function spendKey(id){
+    for(const g of Inventory.carried()){ for(const grid of Inventory.nestedGrids(g)){ if(grid.count(id)>0 && grid.consume(id,1)){ Events.emit('inv:changed'); return true; } } }
+    return false;
+  }
+  function doorLabel(d){
+    if(d.locked){ const kn=(DATA.items[d.key]&&DATA.items[d.key].name)||'a key'; return 'locked — needs '+kn; }
+    return d.open?'close door':'open door';
+  }
+  function toggleDoor(d,inter){
+    // a still-locked door: try the player's key first. No key → just a prompt, no swing.
+    if(d.locked){
+      if(!carryingKey(d.key)){
+        const kn=(DATA.items[d.key]&&DATA.items[d.key].name)||'a key';
+        UI.toast('Locked — needs '+kn,'neg'); Audio.play('ui');
+        return;
+      }
+      spendKey(d.key); d.locked=false;
+      if(d.plate){ d.plate.material.color.set(0x6fae6f); d.plate.material.emissive.set(0x1a3a1a); } // plate goes green = unlocked
+      const kn=(DATA.items[d.key]&&DATA.items[d.key].name)||'key';
+      UI.toast('Unlocked ('+kn+' used)','pos'); Audio.play('pickup');
+    }
+    d.open=!d.open; d.col.open=d.open; d.pivot.rotation.y=(d.axis==='z'?Math.PI/2:0)+(d.open?-Math.PI/2:0);
+    if(inter) inter.label=doorLabel(d);
+  }
 
   // A straight wall (along X or Z) with a doorway GAP punched in it. Split into
   // two solid segments around the gap; the gap is just absence of collider, so
@@ -584,6 +631,14 @@ export const World = (function(){
   function addBuilding(cx,cz,w,d,h,rng,wallColor,facing){
     const t=0.4, gw=2.6, pal=buildingPalette(wallColor||0x3a414a), col=pal.wall;
     facing=facing||'S';
+    // A MINORITY of raid buildings are LOCKED behind a key — a risk/reward cache the
+    // player can crack once they're carrying an Office Key. Kept rare (~22%) and only
+    // in raids (never the hub) so it never gates the common path: most buildings stay
+    // open, objectives + extract live in the open world, so a locked door only ever
+    // walls off that one building's own indoor loot. rng is seeded → deterministic.
+    // Gate on S.run (set the moment a raid begins, before buildRaid runs) — S.mode is
+    // only flipped to RAID at the very end of buildRaid, so it isn't RAID yet here.
+    const lockKey = (S.run && rng()<0.22) ? 'key_office' : null;
     reserveFootprint(cx,cz,w,d);                       // claim this plot so the layout
                                                        // generators won't overlap it with a neighbour
     // ---- foundation plinth: a short, slightly oversized base slab so the
@@ -595,13 +650,13 @@ export const World = (function(){
     // hinge corner is therefore (wall centre − gw/2) so the gw-wide leaf spans the
     // gap exactly. The door's axis MATCHES the wall it's punched in: S/N walls run
     // along X (axis 'x'); W/E walls run along Z (axis 'z').
-    if(facing==='S'){ wallWithGap('x',cx,w,cz-d/2,h,col,0,gw); addDoor(cx-gw/2,cz-d/2,'x',gw,h,pal); }
+    if(facing==='S'){ wallWithGap('x',cx,w,cz-d/2,h,col,0,gw); addDoor(cx-gw/2,cz-d/2,'x',gw,h,pal,lockKey); }
     else            { addBox(cx, cz-d/2, w, t, h, col); }                  // front (-Z)
-    if(facing==='N'){ wallWithGap('x',cx,w,cz+d/2,h,col,0,gw); addDoor(cx-gw/2,cz+d/2,'x',gw,h,pal); }
+    if(facing==='N'){ wallWithGap('x',cx,w,cz+d/2,h,col,0,gw); addDoor(cx-gw/2,cz+d/2,'x',gw,h,pal,lockKey); }
     else            { addBox(cx, cz+d/2, w, t, h, col); }                  // back (+Z)
-    if(facing==='W'){ wallWithGap('z',cz,d,cx-w/2,h,col,0,gw); addDoor(cx-w/2,cz-gw/2,'z',gw,h,pal); }
+    if(facing==='W'){ wallWithGap('z',cz,d,cx-w/2,h,col,0,gw); addDoor(cx-w/2,cz-gw/2,'z',gw,h,pal,lockKey); }
     else            { addBox(cx-w/2, cz, t, d, h, col); }                  // left (-X)
-    if(facing==='E'){ wallWithGap('z',cz,d,cx+w/2,h,col,0,gw); addDoor(cx+w/2,cz-gw/2,'z',gw,h,pal); }
+    if(facing==='E'){ wallWithGap('z',cz,d,cx+w/2,h,col,0,gw); addDoor(cx+w/2,cz-gw/2,'z',gw,h,pal,lockKey); }
     else            { addBox(cx+w/2, cz, t, d, h, col); }                  // right (+X)
 
     // ---- windows on the SOLID outer walls (skip the entrance wall) ----------
@@ -936,18 +991,19 @@ export const World = (function(){
     if(layout==='lot') buildLot(H,i,rng);
     else if(layout==='streets') buildStreet(H,i,rng);
     else buildScatter(H,i,rng);
-    // crates
-    const commons=5+i, rares=DATA.stops.rareCrates(i);
-    for(let c=0;c<commons;c++) crate(rng,false);
-    for(let c=0;c<rares;c++) crate(rng,true);
+    // NOTE: the old open-ground "loot crates" that scattered item PICKUPS on the
+    // ground when opened have been removed (user: no item-dropping loot boxes, and no
+    // random crates strewn outside buildings). Loot now comes only from SEARCHABLE
+    // containers (placed INSIDE buildings + a few staged in the raid) and corpses —
+    // both feed the dual-panel loot UI, never a burst of ground pickups.
     // resource nodes (Harvest)
     const nNodes=3+Math.floor(rng()*3);
     for(let n=0;n<nNodes;n++){ let nx,nz,tr=0; do{nx=(rng()*2-1)*(H-10);nz=(rng()*2-1)*(H-10);tr++;}while(Math.hypot(nx,nz)<16&&tr<20); Harvest.spawn(nx,nz,rng); }
-    // searchable containers (lockers / crates / safe)
-    const ctypes=['locker','locker','weapon','med','safe'];
-    const nC=4+i;
-    for(let c=0;c<nC;c++){ let cx,cz,tr=0; do{cx=(rng()*2-1)*(H-9);cz=(rng()*2-1)*(H-9);tr++;}while(Math.hypot(cx,cz)<14&&tr<20);
-      Loot.makeContainer(cx,cz, ctypes[Math.floor(rng()*ctypes.length)]); }
+    // NOTE: searchable containers used to ALSO be scattered randomly across the open
+    // ground here (safes/lockers sitting outside for no reason). Removed per user — the
+    // ONLY containers now are the ones placed INSIDE buildings (addBuilding, per-room),
+    // plus corpse loot. Buildings spawn several rooms each with a high per-room
+    // container chance, so in-building loot remains plentiful without the outdoor litter.
     // enemies
     const count=DATA.stops.count(i), pool=DATA.stops.roles(i);
     for(let e=0;e<count;e++){ let ex,ez,tr=0; do{ex=(rng()*2-1)*(H-12);ez=(rng()*2-1)*(H-12);tr++;}while(Math.hypot(ex,ez)<22&&tr<30);
@@ -970,34 +1026,10 @@ export const World = (function(){
     UI.banner(`Sector ${String.fromCharCode(65+i)}`, `Stop ${i+1} · ${DATA.stops.count(i)} hostiles`); Audio.play('notify');
     if(!Input.locked && !Input.isTouch) GFX.dom.requestPointerLock();
   }
-  // dress a loot-crate body (already added via addBox, which owns the collider +
-  // the emissive-toggle material) so it READS as a crate, not a plain cube: corner
-  // braces, a lid rim, and plank seams on the faces. All purely visual (deco — no
-  // colliders/solids), so collision + the vault/mantle `top` metadata are unchanged.
-  function dressCrate(cx,cz,s,rare){
-    const wood = rare?0x5a4a66:0x6a5230;          // a touch lighter than the body so braces read
-    const brace = rare?0x3a3147:0x4a3a22;
-    const half=s/2;
-    // corner braces (vertical ribs at the 4 corners)
-    for(const dx of [-1,1]) for(const dz of [-1,1])
-      addBox(cx+dx*(half-0.06), cz+dz*(half-0.06), 0.14, 0.14, s, brace, {...deco, rough:.85, cast:false});
-    // top + bottom rim bands
-    addBox(cx,cz, s+0.04, s+0.04, 0.12, brace, {...deco, baseY:0, cast:false});
-    addBox(cx,cz, s+0.04, s+0.04, 0.12, brace, {...deco, baseY:s-0.12, cast:false});
-    // a couple of plank seams on each side face (thin recessed lines)
-    for(const f of [[0,half],[0,-half],[half,0],[-half,0]]){
-      const onX = f[0]!==0;
-      for(let p=1;p<=2;p++){ const y=s*p/3;
-        addBox(cx+f[0], cz+f[1], onX?0.06:s, 0.04, 0.04, wood, {...deco, baseY:y, cast:false}); }
-    }
-  }
-  function crate(rng,rare){ let cx,cz,tr=0; do{cx=(rng()*2-1)*64;cz=(rng()*2-1)*64;tr++;}while(Math.hypot(cx,cz)<12&&tr<20);
-    const s=1.2;
-    const m=addBox(cx,cz,s,s,s, rare?0x4a3f5a:0x4a3f23, {uniqueMat:true});  // collidable body (owns collider + emissive)
-    m.material.emissive=new T.Color(rare?0xc06fd8:0xe8a33d); m.material.emissiveIntensity=.15;
-    dressCrate(cx,cz,s,rare);                                               // wooden-crate dressing (visual only)
-    const crateObj={pos:new T.Vector3(cx,1,cz),rare,mesh:m,opened:false};
-    interactables.push({pos:crateObj.pos, radius:2.4, label:rare?'open rare cache':'open crate', crate:true, action:()=>{ if(crateObj.opened) return; crateObj.opened=true; m.material.emissiveIntensity=0; Loot.openCrate(crateObj); }}); }
+  // (the open-ground wooden loot crate — dressCrate + crate — was REMOVED: it spawned
+  //  item pickups on the ground when opened, which is the loot-box behaviour the user
+  //  wanted gone, and it was always placed outside buildings. Loot is now containers +
+  //  corpses only.)
   function makeExtract(x,z){
     const ring=new T.Mesh(new T.CylinderGeometry(3,3,.2,24,1,true), new T.MeshBasicMaterial({color:0x57c06b,transparent:true,opacity:.4,side:T.DoubleSide})); ring.position.set(x,1.5,z); GFX.world.add(ring);
     const pad=new T.Mesh(new T.CircleGeometry(3,24), new T.MeshBasicMaterial({color:0x57c06b,transparent:true,opacity:.18})); pad.rotation.x=-Math.PI/2; pad.position.set(x,.05,z); GFX.world.add(pad);
@@ -1044,9 +1076,9 @@ export const World = (function(){
     if(!near || !near.action) return;
     const k=near.key||'interact';
     if(which && which!==k) return;
-    near.action(); if(near.crate) near.consumed=true;
+    near.action();
   }
-  function interactAny(){ if(near && near.action){ near.action(); if(near.crate) near.consumed=true; } }
+  function interactAny(){ if(near && near.action){ near.action(); } }
   function updateInteract(){
     if(S.mode!==MODE.HUB && S.mode!==MODE.RAID){ UI.prompt(null); return; }
     const p=GFX.yaw.position; near=null; let best=Infinity;

@@ -102,7 +102,6 @@ export const Loot = (function(){
     else { if(!Inventory.addLoot(pk.item)){ UI.toast('No room','neg'); return; } UI.toast(`${pk.item.def.name}${pk.item.qty>1?' ×'+pk.item.qty:''}`, pk.item.def.rarity>=3?'rare':'neu'); }
     pk.consumed=true; inter.consumed=true; GFX.world.remove(pk.mesh); Audio.play('pickup');
   }
-  function dropFromEnemy(pos){ spawnPickup(pos.x,pos.z, roll('enemy_drop')); }
   // lootable corpse: a STRUCTURED second actor that mirrors the player. The dead
   // AI carries its kit in EQUIP SLOTS (primary/secondary/helmet/armor/rig/backpack)
   // exactly like S.profile.equip, and its loose loot lives INSIDE its equipped rig
@@ -140,12 +139,10 @@ export const Loot = (function(){
     if(c.cmesh.gun) c.cmesh.gun.visible = !!(eq.primary||eq.secondary);
     if(c.cmesh.plate) c.cmesh.plate.visible = !!eq.armor;
     if(c.cmesh.helmet) c.cmesh.helmet.visible = !!eq.helmet; }
-  function openCrate(crate){
-    const n=crate.rare?2+Math.floor(Math.random()*2):1+Math.floor(Math.random()*2);
-    for(let i=0;i<n;i++){ const it=roll(crate.rare?'crate_rare':'crate_common'); spawnPickup(crate.pos.x+(Math.random()-.5)*1.6, crate.pos.z+(Math.random()-.5)*1.6, it); }
-    UI.toast(crate.rare?'Rare cache cracked':'Crate opened', crate.rare?'rare':'neu');
-    if(crate.rare) Events.emit('obj:rare');
-  }
+  // (openCrate was REMOVED with the open-ground wooden loot crates — it was the only
+  //  thing that spawned item PICKUPS in a burst, the loot-box behaviour the user
+  //  removed. Loot now flows exclusively through the dual-panel loot UI: searchable
+  //  containers + corpse kits.)
   // ---- 3D CONTAINER MODELS -------------------------------------------------
   // Recognizable low-poly models so the player can read a container at a glance
   // (a weapon crate looks military, a med crate carries a red cross, a locker is a
@@ -223,7 +220,13 @@ export const Loot = (function(){
     const inter={ pos:cont.pos, radius:2.4, key:'interact', label:'search '+def.name.toLowerCase(),
       // Open the crate IMMEDIATELY (no upfront wait) and let the loot UI reveal each
       // item one-by-one with its own progress bar — show-the-crate-then-fill feel.
-      action:()=>{ Audio.play('ui'); cont.searched=true; if(m.accent) m.accent.material.emissiveIntensity=0; inter.label='loot '+def.name.toLowerCase();
+      action:()=>{ Audio.play('ui');
+        const first=!cont.searched; cont.searched=true;
+        if(m.accent) m.accent.material.emissiveIntensity=0; inter.label='loot '+def.name.toLowerCase();
+        // a SAFE is the rarest container — searching one the first time satisfies the
+        // "Crack a rare cache" bonus objective (the old open-ground rare crate that
+        // used to emit obj:rare was removed; the safe inherits that role).
+        if(first && type==='safe') Events.emit('obj:rare');
         if(S.mode===MODE.RAID) UI.openLoot(cont); } };
     World.addInteract(inter);
   }
@@ -235,5 +238,5 @@ export const Loot = (function(){
   }
   function update(dt){ if(S.mode!==MODE.RAID) return;
     for(let i=0;i<pickups.length;i++){ const pk=pickups[i]; if(pk.consumed) continue; pk.mesh.rotation.y+=dt*3; pk.mesh.position.y=.5+Math.sin(Clock.now*3+i)*.1; } }
-  return { roll, clear, spawnPickup, grab, dropFromEnemy, makeCorpse, makeContainer, openCrate, mapMarks, reflectCorpse, update };
+  return { roll, clear, spawnPickup, grab, makeCorpse, makeContainer, mapMarks, reflectCorpse, update };
 })();
