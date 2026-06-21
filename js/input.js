@@ -78,6 +78,11 @@ export const Input = (function(){
       else if(a==='pickup') World.interact('pickup');
     }
     if(a==='interact' && (S.mode===MODE.RAID||S.mode===MODE.HUB)) World.interact('interact');
+    // CONSUMABLES HOTBAR — quick-use slots (works in RAID + HUB). Each hotbarN action
+    // uses ONE of the consumable in that HUD slot via UI.useHotbarSlot (use-1 path).
+    if(a && a.startsWith('hotbar') && (S.mode===MODE.RAID||S.mode===MODE.HUB)){
+      const n=parseInt(a.slice(6),10)-1; if(n>=0 && UI.useHotbarSlot) UI.useHotbarSlot(n);
+    }
     // TAB — universal "close any open overlay" key. If ANY menu/overlay is showing
     // (inventory, vendor, settings, gunsmith, map, etc.) Tab closes it and re-locks
     // for gameplay. Only when nothing is open does Tab fall through to its bound

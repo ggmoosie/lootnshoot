@@ -199,6 +199,17 @@
   #banner::before{right:calc(100% + 16px);} #banner::after{left:calc(100% + 16px);transform:scaleX(-1);}
   body.touch #banner .bt{font-size:30px;letter-spacing:4px;}
   #prompt b{color:var(--amber);font-family:var(--mono);}
+  /* consumables hotbar (desktop quick-use): bottom-center row of slots, above the
+     interact prompt. Hidden by default (display set by UI.refreshConbar). */
+  #conbar{position:absolute;left:50%;bottom:64px;transform:translateX(-50%);display:none;gap:8px;pointer-events:auto;z-index:60;}
+  .conslot{position:relative;width:52px;height:52px;border:1px solid var(--line);border-radius:7px;background:rgba(8,10,12,.66);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:border-color .1s,transform .05s;}
+  .conslot:hover{border-color:var(--amber);transform:translateY(-1px);}
+  .conslot:active{transform:translateY(0);}
+  .conslot .conic{font-size:24px;line-height:1;}
+  .conslot .conic img.itemicon{width:30px;height:30px;display:block;}
+  .conslot .conkey{position:absolute;top:2px;left:4px;font-family:var(--mono);font-size:10px;color:var(--amber);letter-spacing:1px;}
+  .conslot .conq{position:absolute;bottom:2px;right:4px;font-family:var(--mono);font-size:11px;color:var(--text);font-weight:bold;}
+  body.touch #conbar{display:none !important;}
   #feed{position:absolute;left:24px;bottom:70px;width:300px;}
   .toast{font-family:var(--mono);font-size:12px;margin-top:3px;opacity:0;animation:tin .2s forwards;}
   .toast.f{animation:tout .4s forwards;}

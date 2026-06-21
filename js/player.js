@@ -183,18 +183,31 @@ export const Player = (function(){
   // cosmetic progress bar (Status.beginUse) before its effect lands; effect data
   // comes from DATA.consumables. No hunger/thirst/weight — extraction shooter, not
   // a survival sim. ----
+  // is this def a usable consumable (med/food/stim/etc.)? Used by the heal key, the
+  // consumables hotbar, and the mobile quick-bar to know what's quick-usable.
+  function isConsumable(def){ return !!def && (def.type==='med'||def.type==='food'); }
+  // begin using a SPECIFIC consumable instance by uid (hotbar + double-click path).
+  // Spends exactly ONE unit (Inventory.consumeOne), then plays the use animation and
+  // lands the effect on completion. Returns true if a use started.
+  function useConsumable(uid){
+    if(Status.isUsing()) return false;                  // one use at a time
+    const loc=Inventory.locate(uid); if(!loc){ UI.toast('Item gone','neg'); return false; }
+    const def=loc.item.def;
+    if(!isConsumable(def)){ return false; }
+    const cfg=DATA.consumables[def.id]||{ useTime:0.1, heal:def.heal||0, cure:def.cure, buff:def.buff, buffDur:12, buffMag:1 };
+    // consume ONE up-front so it can't be double-used mid-animation (USE-1-NOT-STACK)
+    if(!Inventory.consumeOne(uid)){ UI.toast('Item gone','neg'); return false; }
+    UI.toast(`Using ${def.name}…`,'neu');
+    Status.beginUse(cfg.useTime, (cfg.name||def.name).toUpperCase(), ()=>applyConsumable(def, cfg));
+    return true;
+  }
   function useMed(){
     if(Status.isUsing()){ return; }                     // one use at a time
     const grids = S.mode===MODE.RAID?Inventory.carried():[Inventory.stash()];
     let found=null;
-    for(const g of grids){ const t=g.items.find(i=>i.def.type==='med'); if(t){ found={g,t}; break; } }
+    for(const g of grids){ const t=g.items.find(i=>i.def.type==='med'); if(t){ found=t; break; } }
     if(!found){ UI.toast('No meds','neg'); return; }
-    const def=found.t.def; const cfg=DATA.consumables[def.id]||{ useTime:0.1, heal:def.heal||0, cure:def.cure, buff:def.buff, buffDur:12, buffMag:1 };
-    // consume the item up-front so it can't be double-used mid-animation
-    found.t.qty--; if(found.t.qty<=0||!found.t.def.stack) found.g.remove(found.t.uid);
-    Events.emit('inv:changed');
-    UI.toast(`Using ${def.name}…`,'neu');
-    Status.beginUse(cfg.useTime, (cfg.name||def.name).toUpperCase(), ()=>applyConsumable(def, cfg));
+    useConsumable(found.uid);                            // route through the use-1 path
   }
   // land the effect when the use-animation completes (callback from Status).
   function applyConsumable(def, cfg){
@@ -205,6 +218,62 @@ export const Player = (function(){
     if(cfg.buff) Status.apply(cfg.buff, cfg.buffDur||12, cfg.buffMag||1);     // timed buff (speed/stamina)
     UI.toast(`Used ${def.name}`,'pos');
     Events.emit('player:changed');
+  }
+  // ---- LOOTABLE-CRATE AIM STENCIL (feat/inventory-ui) ----------------------
+  // When the player AIMS at a lootable crate that's within loot range, draw a
+  // glowing outline on it so it reads as "you can loot this". Fully self-contained
+  // and READ-ONLY w.r.t. world.js: we raycast the camera against the live scene and
+  // recognise an UNOPENED crate body by its signature — a ~1.2m cube box mesh whose
+  // material carries a non-zero emissive (world.js seeds crate bodies that way and
+  // zeroes emissiveIntensity the moment a crate is opened). No world internals are
+  // imported; the outline mesh is our own overlay, added to GFX.world and reused.
+  const LOOT_RANGE=2.6;                 // crate interactable radius (2.4) + a little reach
+  let crateRay=null, outline=null;
+  function isCrateMesh(o){
+    if(!o || !o.isMesh || !o.geometry || !o.material) return false;
+    const g=o.geometry, p=g.parameters;
+    if(!p || g.type!=='BoxGeometry') return false;
+    // crate body = ~1.2m cube (other props are 0.9 cubes / non-cube boxes)
+    const w=p.width||0, h=p.height||0, d=p.depth||0;
+    const cube = Math.abs(w-h)<0.05 && Math.abs(h-d)<0.05;
+    if(!cube || w<1.05 || w>1.4) return false;
+    const m=Array.isArray(o.material)?o.material[0]:o.material;
+    // unopened: an emissive tint that's still lit (opened crates → intensity 0)
+    return !!(m && m.emissive && (m.emissiveIntensity||0) > 0.001);
+  }
+  function ensureOutline(){
+    if(!outline){
+      const geo=new T.EdgesGeometry(new T.BoxGeometry(1,1,1));
+      const mat=new T.LineBasicMaterial({ color:0xffd27a, transparent:true, opacity:0.9, depthTest:false });
+      outline=new T.LineSegments(geo, mat); outline.renderOrder=999; outline.visible=false;
+    }
+    if(outline.parent!==GFX.world){ try{ GFX.world.add(outline); }catch(_){ } }
+    return outline;
+  }
+  function updateCrateAim(){
+    if(S.mode!==MODE.RAID){ if(outline) outline.visible=false; return; }
+    if(!crateRay) crateRay=new T.Raycaster();
+    crateRay.far=LOOT_RANGE+0.6;
+    const cam=GFX.camera, origin=new T.Vector3(), dir=new T.Vector3();
+    cam.getWorldPosition(origin); cam.getWorldDirection(dir);
+    crateRay.set(origin, dir);
+    let hit=null;
+    let list=[]; try{ list=crateRay.intersectObjects(GFX.world.children, true); }catch(_){ list=[]; }
+    // first crate body the ray crosses within loot range (the crate's own thin deco —
+    // corner braces / plank seams — aren't cubes so isCrateMesh skips them). We don't
+    // gate on occlusion: the interactable system itself is distance-only, so matching
+    // it keeps the highlight in lockstep with what you can actually loot.
+    for(const i of list){ if(i.distance>LOOT_RANGE) break; if(isCrateMesh(i.object)){ hit=i; break; } }
+    if(hit){
+      const ol=ensureOutline();
+      const o=hit.object; o.updateWorldMatrix(true,false);
+      const c=new T.Vector3(); o.getWorldPosition(c);
+      const p=o.geometry.parameters, s=(p.width||1.2);
+      ol.position.copy(c); ol.scale.set(s+0.06, s+0.06, s+0.06);
+      // gentle pulse so the highlight reads as "active"
+      ol.material.opacity = 0.55 + 0.35*Math.abs(Math.sin(performance.now()*0.005));
+      ol.visible=true;
+    } else if(outline){ outline.visible=false; }
   }
   function damage(n, fromPos){
     if(S.mode!==MODE.RAID) return;
@@ -317,8 +386,9 @@ export const Player = (function(){
     // bleed/buff effects are owned by Status.update
     // vignette
     if(vig>0){ vig-=dt; if(vig<=0) document.getElementById('vig').style.opacity='0'; }
+    updateCrateAim();   // outline a lootable crate when aimed at within range
     Events.emit('player:tick');
   }
   function resetForRaid(){ S.player.health=S.player.maxHealth; S.player.stamina=S.player.maxStamina; Status.clearAll(); Input.crouch=false; vault=null; jumpLatch=false; wallLatch=false; bobT=0; bobX=0; bobY=0; groundY=0; groundCur=0; jumpY=0; velY=0; grounded=true; }
-  return { spawn, heal, useMed, damage, update, resetForRaid, isMoving:()=>movingFlag, inVault, RADIUS, HEIGHT };
+  return { spawn, heal, useMed, useConsumable, isConsumable, damage, update, resetForRaid, isMoving:()=>movingFlag, inVault, RADIUS, HEIGHT };
 })();
