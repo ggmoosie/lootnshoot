@@ -20,7 +20,12 @@ export const Input = (function(){
 
   // ---- keybindings (read live from profile.settings, fallback to defaults) ----
   function binds(){ return (S.profile&&S.profile.settings&&S.profile.settings.binds)||DATA.binds; }
-  function code(action){ return binds()[action]||DATA.binds[action]; }
+  // UNIFIED INTERACT/LOOT: `pickup` is no longer its own bind — it's an ALIAS of
+  // `interact`. Resolving it here (rather than storing a duplicate key) means any
+  // lookup of the pickup key — notably world.js's loose-item HUD prompt
+  // `Input.code('pickup')` — always tracks the LIVE interact bind, even after the
+  // player rebinds Interact in Settings. Crash-proof: falls back to DATA.binds.
+  function code(action){ if(action==='pickup') action='interact'; return binds()[action]||DATA.binds[action]; }
   function down(action){ return !!keys[code(action)]; }
   function actionFor(c){ const b=binds(); for(const a in b) if(b[a]===c) return a; return null; }
   function sens(){ return (S.profile&&S.profile.settings?S.profile.settings.sens:1)*SENS; }
@@ -75,9 +80,16 @@ export const Input = (function(){
       else if(a==='drone') Allies.deploy();
       else if(a==='firemode') Weapons.cycleMode();
       else if(a==='laser') Weapons.toggleLaser();
-      else if(a==='pickup') World.interact('pickup');
     }
-    if(a==='interact' && (S.mode===MODE.RAID||S.mode===MODE.HUB)) World.interact('interact');
+    // UNIFIED INTERACT/LOOT (feat/interact): ONE context-sensitive key does it all —
+    // open/search a container, loot a corpse, work a door/station, AND pick up a loose
+    // ground item. World.interactAny() fires whatever lootable is NEAREST regardless of
+    // its key tag, so there's no separate "pick up item" bind anymore (it's removed from
+    // DATA.binds; `code('pickup')` aliases to `interact` so world.js's loose-item prompt
+    // still resolves to this key). Hold-actions (extract/defuse) read the interact key
+    // straight from Input.keys in world.js and are unchanged. We trigger off the bound
+    // CODE (not actionFor) so it fires even if some other action shares the key order.
+    if(e.code===code('interact') && (S.mode===MODE.RAID||S.mode===MODE.HUB)) World.interactAny();
     // CONSUMABLES HOTBAR — quick-use slots (works in RAID + HUB). Each hotbarN action
     // uses ONE of the consumable in that HUD slot via UI.useHotbarSlot (use-1 path).
     if(a && a.startsWith('hotbar') && (S.mode===MODE.RAID||S.mode===MODE.HUB)){
