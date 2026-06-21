@@ -1004,3 +1004,192 @@ if(Array.isArray(DATA.recipes)) DATA.recipes.push(
 // earlier blocks; re-stamp so serialize/icons/stacking work for these too).
 for(const k in DATA.items) if(!DATA.items[k].id) DATA.items[k].id=k;
 // =====================================================================
+/* ════════════════════════════════════════════════════════════════════════════
+   SECTION: GUNS + ATTACHMENTS EXPANSION  (added by feat/guns-attachments)
+   ────────────────────────────────────────────────────────────────────────────
+   PURE CONTENT — no new systems. Appended via Object.assign / push so it never
+   collides with the literals above (parallel agents auto-merge). Owns:
+     1. Two new CALIBERS (5.7 PDW, .357 Magnum) + their FMJ/AP/HP type tables +
+        per-caliber FMJ default + the matching ammo ITEM stacks.
+     2. Six new WEAPONS with GENUINELY DISTINCT behavior — each picks a different
+        point in the fire-mode × RPM × damage × recoil × mag × range space so no two
+        feel alike (see the per-gun comments). NOTE the new optional `burst` field:
+        weapons.js reads it for the per-pull round count, so a 2-round-burst gun
+        differs from a 3-round-burst gun (default 3 if omitted). The viewmodel
+        builder (weapons.js GUN_VM) gives each its own silhouette.
+     3. Twelve new ATTACHMENTS with advanced procedural shapes (weapons.js builds
+        them) across every slot — optics (prism / 8x / reflex), muzzles (linear
+        comp / shotgun duckbill), foregrips (stubby / VG-skeleton), stocks (PDW /
+        wire), a target laser, mags (32-rnd / pistol stick / mini-drum), barrels
+        (carbine / DMR fluted). Same two-table pattern (item def + effect def).
+     4. Loot / vendor / recipe / icon registration for everything above.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+// ─── 1. NEW CALIBERS (5.7 PDW armor-piercer, .357 Magnum revolver round) ──────
+// Each caliber needs (a) ammo ITEM stacks carrying cal+ammoType, (b) DATA.ammoTypes
+// rows (the shot modifiers weapons.js folds in), (c) a DATA.ammoDefault entry
+// (loadedTypeId fallback — REQUIRED per caliber or reload breaks).
+Object.assign(DATA.items, {
+  // 5.7×28 — small, fast, naturally armor-piercy: low damage but high pen + range.
+  ammo_57:    {name:'5.7 PDW',     type:'ammo', cal:'57',  ammoType:'57_fmj', size:[1,1], stack:60, value:3, rarity:1},
+  ammo_57_ap: {name:'5.7 AP',      type:'ammo', cal:'57',  ammoType:'57_ap',  size:[1,1], stack:60, value:5, rarity:2},
+  // .357 Magnum — big revolver round: heavy hit, stout recoil, modest pen.
+  ammo_357:   {name:'.357 Mag',    type:'ammo', cal:'357', ammoType:'357_fmj',size:[1,1], stack:40, value:4, rarity:1},
+  ammo_357_hp:{name:'.357 HP',     type:'ammo', cal:'357', ammoType:'357_hp', size:[1,1], stack:40, value:6, rarity:2},
+});
+Object.assign(DATA.ammoTypes, {
+  // ---- 5.7 ---- (high pen by nature; AP is brutal vs armor)
+  '57_fmj': { cal:'57',  item:'ammo_57',     label:'FMJ', dmg:1.00, pen:0.55, range:1.08, recoil:0.92, tracer:false, color:0xffe08a },
+  '57_ap':  { cal:'57',  item:'ammo_57_ap',  label:'AP',  dmg:0.95, pen:0.95, range:1.15, recoil:1.00, tracer:false, color:0xbfe0ff },
+  // ---- .357 ---- (hammer round; HP devastates soft targets, falls off vs plate)
+  '357_fmj':{ cal:'357', item:'ammo_357',    label:'FMJ', dmg:1.00, pen:0.35, range:1.00, recoil:1.06, tracer:false, color:0xffd27a },
+  '357_hp': { cal:'357', item:'ammo_357_hp', label:'HP',  dmg:1.42, pen:0.05, range:0.85, recoil:1.00, tracer:false, color:0xff8a6a },
+});
+for(const k in DATA.ammoTypes) if(!DATA.ammoTypes[k].id) DATA.ammoTypes[k].id=k;
+Object.assign(DATA.ammoDefault, { '57':'57_fmj', '357':'357_fmj' });
+
+// ─── 2. NEW WEAPONS — each occupies a DISTINCT corner of the fire-mode/RPM/dmg
+//        space (user: "give each distinct characteristics"). `modes` order = the
+//        DEFAULT mode + cycle order; `burst` = rounds per pull in burst mode
+//        (weapons.js reads it; default 3). Stats use the established schema so the
+//        gunsmith + viewmodel render them with zero code changes. ──────────────
+Object.assign(DATA.weapons, {
+  // PDW — 5.7 hyper-RPM bullet-hose: very fast, low per-shot damage, soft recoil,
+  // tight spread, naturally armor-piercing. Default 3-round BURST, also full-auto.
+  pdw:{name:'P90 PDW', cal:'57', damage:17, rpm:900, mag:50, reload:2.0, spread:0.014, adsSpread:0.004, adsTime:0.18, recoil:0.007, range:60, eff:34, velocity:715, zoom:1, modes:['burst','auto','semi'], burst:3, slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  // UMP — .45 SMG, deliberately SLOW-firing for an SMG (heavy thump per round),
+  // controllable. 2-round burst option to contrast the PDW's 3-round burst.
+  ump:{name:'UMP .45', cal:'45', damage:26, rpm:600, mag:25, reload:1.8, spread:0.018, adsSpread:0.005, adsTime:0.2, recoil:0.011, range:52, eff:28, velocity:380, zoom:1, modes:['auto','burst','semi'], burst:2, slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  // REVOLVER — .357 hand-cannon: SEMI only, very low RPM, huge damage, tiny 6-round
+  // cylinder, heavy recoil. The high-skill one-shot sidearm.
+  revolver:{name:'.357 Magnum', cal:'357', damage:78, rpm:140, mag:6, reload:2.6, spread:0.02, adsSpread:0.006, adsTime:0.2, recoil:0.04, range:55, eff:34, velocity:430, zoom:1, modes:['semi'], slots:['optic','muzzle','laser','barrel']},
+  // BATTLE RIFLE — 7.62 hard-hitter: SEMI + 2-round BURST (no full-auto), mid RPM,
+  // big damage, long reach, stiff recoil. A precise mid-long DMR/AR hybrid.
+  battle:{name:'SCAR-H Battle', cal:'762', damage:52, rpm:520, mag:20, reload:2.1, spread:0.009, adsSpread:0.0018, adsTime:0.3, recoil:0.026, range:150, eff:120, velocity:870, zoom:1, modes:['semi','burst'], burst:2, slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+  // AUTO-SHOTGUN — 12g FULL-AUTO: faster cadence than the pump, 8-round box, brutal
+  // up close, falls off hard (buckshot range). The room-clearer.
+  autoshotgun:{name:'AA-12 Auto', cal:'12g', damage:96, rpm:300, mag:8, reload:3.2, spread:0.055, adsSpread:0.028, adsTime:0.3, recoil:0.03, range:36, eff:13, velocity:430, zoom:1, modes:['auto','semi'], slots:['optic','muzzle','foregrip','stock','laser','magazine']},
+  // BURST CARBINE — 5.56 marksman carbine locked to a crisp 3-round BURST + semi
+  // (no full-auto): high accuracy, controlled, the disciplined-trigger option.
+  burstcarb:{name:'M16 Burst', cal:'556', damage:30, rpm:700, mag:30, reload:1.9, spread:0.01, adsSpread:0.0022, adsTime:0.24, recoil:0.013, range:105, eff:72, velocity:900, zoom:1, modes:['burst','semi'], burst:3, slots:['optic','muzzle','foregrip','stock','laser','magazine','barrel']},
+});
+// weapon ITEM defs (footprint sized like the existing guns)
+Object.assign(DATA.items, {
+  wpn_pdw:      {name:'P90 PDW',      type:'weapon', weapon:'pdw',       size:[3,2], value:1300, rarity:3},
+  wpn_ump:      {name:'UMP .45',      type:'weapon', weapon:'ump',       size:[3,2], value:760,  rarity:2},
+  wpn_revolver: {name:'.357 Magnum',  type:'weapon', weapon:'revolver',  size:[2,2], value:520,  rarity:2},
+  wpn_battle:   {name:'SCAR-H Battle',type:'weapon', weapon:'battle',    size:[5,2], value:1900, rarity:4},
+  wpn_autoshotgun:{name:'AA-12 Auto', type:'weapon', weapon:'autoshotgun',size:[4,2],value:1500, rarity:4},
+  wpn_burstcarb:{name:'M16 Burst',    type:'weapon', weapon:'burstcarb', size:[4,2], value:950,  rarity:3},
+});
+
+// ─── 3. NEW ATTACHMENTS (advanced procedural shapes built in weapons.js) ──────
+// Same two-table pattern: ITEM def (slot + footprint + value/rarity) + EFFECT def
+// (mods=multiplicative, add=additive on 1.0-baselined scalars, zoom sets optic,
+// flags quiet/laser). Slots reuse the established taxonomy so they slot into any
+// gun whose `slots` lists them. weapons.js gives each a detailed mesh (see the
+// attachment-shape additions there) — optics stay SEE-THROUGH per the optics PR.
+DATA.gunExpItems = {
+  // OPTIC — a prism sight (etched reticle, mid zoom), an 8x precision scope, a
+  // micro reflex (tiny, fast). Reticle drives the ADS sight picture.
+  att_prism:{name:'Prism 3x', type:'attachment', slot:'optic', size:[2,1], value:560, rarity:3},
+  att_scope8:{name:'8x Scope', type:'attachment', slot:'optic', size:[2,1], value:980, rarity:4},
+  att_reflex:{name:'Micro Reflex', type:'attachment', slot:'optic', size:[1,1], value:340, rarity:2},
+  // MUZZLE — a linear comp (recoil, forward blast), a shotgun duckbill (spreads the
+  // pattern HORIZONTALLY — flavor via spread, wide sweep), a flash hider.
+  att_lincomp:{name:'Linear Comp', type:'attachment', slot:'muzzle', size:[1,1], value:300, rarity:2},
+  att_duckbill:{name:'Duckbill', type:'attachment', slot:'muzzle', size:[1,1], value:240, rarity:2},
+  att_flashhider:{name:'Flash Hider', type:'attachment', slot:'muzzle', size:[1,1], value:200, rarity:2},
+  // FOREGRIP — a stubby grip (handling) + a skeletonized VG (recoil + handling)
+  att_stubby:{name:'Stubby Grip', type:'attachment', slot:'foregrip', size:[1,1], value:170, rarity:2},
+  att_skelgrip:{name:'Skeleton Grip', type:'attachment', slot:'foregrip', size:[1,1], value:220, rarity:3},
+  // STOCK — a PDW collapsing stock (mobility) + a wire stock (light, less recoil aid)
+  att_stock_pdw:{name:'PDW Stock', type:'attachment', slot:'stock', size:[1,1], value:320, rarity:2},
+  att_stock_wire:{name:'Wire Stock', type:'attachment', slot:'stock', size:[1,1], value:280, rarity:2},
+  // LASER — a target laser (between basic + IR: strong hipfire, visible)
+  att_laser_tgt:{name:'Target Laser', type:'attachment', slot:'laser', size:[1,1], value:360, rarity:3},
+  // MAGAZINE — a 32-rnd extended, a pistol stick mag, a compact mini-drum
+  att_mag_32:{name:'32-Round Mag', type:'attachment', slot:'magazine', size:[1,2], value:300, rarity:2},
+  att_mag_minidrum:{name:'Mini Drum', type:'attachment', slot:'magazine', size:[2,2], value:460, rarity:3},
+  // BARREL — a shorty carbine barrel + a fluted DMR barrel (range + precision)
+  att_barrel_carbine:{name:'Carbine Barrel', type:'attachment', slot:'barrel', size:[1,1], value:260, rarity:2},
+  att_barrel_dmr:{name:'DMR Barrel', type:'attachment', slot:'barrel', size:[2,1], value:480, rarity:3},
+};
+for(const k in DATA.gunExpItems){ DATA.gunExpItems[k].id=k; DATA.items[k]=DATA.gunExpItems[k]; }
+
+DATA.gunExpAttachments = {
+  // OPTIC — prism = magnified glass (crosshair); 8x = strong scope; reflex = red-dot.
+  att_prism:{slot:'optic', mods:{adsSpread:0.5, adsTime:1.05}, zoom:3.0, reticle:'crosshair', reticleColor:'#ffd27a'},
+  att_scope8:{slot:'optic', mods:{adsSpread:0.35, adsTime:1.3}, zoom:5.5, reticle:'crosshair', reticleColor:'#cfe8ff'},
+  att_reflex:{slot:'optic', mods:{adsSpread:0.72, adsTime:0.9}, zoom:1.2, reticle:'reddot', reticleColor:'#ffd23b'},
+  // MUZZLE — linear comp = recoil cut + a touch of spread; duckbill = trades vertical
+  // for tighter effective range on shot (shotgun friendly); flash hider = mild all-round.
+  att_lincomp:{slot:'muzzle', mods:{recoil:0.6, spread:0.96}},
+  att_duckbill:{slot:'muzzle', mods:{spread:0.82, range:1.08, adsSpread:0.85}},
+  att_flashhider:{slot:'muzzle', mods:{recoil:0.85, spread:0.92}},
+  // FOREGRIP — stubby = fast handling/ADS, little recoil aid; skel = balanced both.
+  att_stubby:{slot:'foregrip', mods:{adsTime:0.85}, add:{handling:0.2, mobility:0.04}},
+  att_skelgrip:{slot:'foregrip', mods:{recoil:0.86, adsTime:0.92}, add:{handling:0.14}},
+  // STOCK — PDW = mobility + ADS, small recoil cost; wire = light, ADS, less recoil aid.
+  att_stock_pdw:{slot:'stock', mods:{adsTime:0.88}, add:{mobility:0.18, handling:0.1}},
+  att_stock_wire:{slot:'stock', mods:{recoil:0.96, adsTime:0.9}, add:{mobility:0.14, handling:0.08}},
+  // LASER — strong hipfire, between basic + IR; visible beam.
+  att_laser_tgt:{slot:'laser', mods:{spread:0.74}, add:{hipAccuracy:0.55}, laser:true},
+  // MAGAZINE — 32: +cap, slight reload cost; mini-drum: big cap, slower.
+  att_mag_32:{slot:'magazine', add:{mag:12}, mods:{reload:1.1}},
+  att_mag_minidrum:{slot:'magazine', add:{mag:35}, mods:{reload:1.3}},
+  // BARREL — carbine: faster handling, less range; DMR: range/velocity/precision, slow ADS.
+  att_barrel_carbine:{slot:'barrel', mods:{range:0.88, velocity:0.9, eff:0.88, adsTime:0.9}, add:{handling:0.12, mobility:0.05}},
+  att_barrel_dmr:{slot:'barrel', mods:{range:1.35, velocity:1.3, eff:1.35, adsSpread:0.8, adsTime:1.15}, add:{handling:-0.06}},
+};
+for(const k in DATA.gunExpAttachments){ DATA.gunExpAttachments[k].id=k; DATA.attachments[k]=DATA.gunExpAttachments[k]; }
+
+// ─── 4. ICONS / VENDOR / LOOT / RECIPES for the new content ───────────────────
+Object.assign(DATA.iconId, {
+  // ammo
+  ammo_57:'🟡', ammo_57_ap:'🔹', ammo_357:'🟤', ammo_357_hp:'🟧',
+  // weapons
+  wpn_pdw:'🔫', wpn_ump:'🔫', wpn_revolver:'🔫', wpn_battle:'🔫', wpn_autoshotgun:'🔫', wpn_burstcarb:'🔫',
+  // attachments
+  att_prism:'🔭', att_scope8:'🔭', att_reflex:'🔴', att_lincomp:'🧱', att_duckbill:'🦆', att_flashhider:'🔥',
+  att_stubby:'🪛', att_skelgrip:'🦴', att_stock_pdw:'🪗', att_stock_wire:'➰', att_laser_tgt:'🔆',
+  att_mag_32:'🔋', att_mag_minidrum:'🥁', att_barrel_carbine:'➖', att_barrel_dmr:'📏',
+});
+
+// per-caliber default-ammo stamp on the plain rounds (already carry ammoType, but
+// keep the safety stamp consistent with the other content blocks)
+for(const k in DATA.ammoDefault){ const t=DATA.ammoTypes[DATA.ammoDefault[k]]; const it=t&&DATA.items[t.item]; if(it&&!it.ammoType) it.ammoType=t.id; }
+
+// VENDOR — make the new content reachable without loot (appended, never rewritten)
+DATA.vendor.push(
+  'ammo_57','ammo_57_ap','ammo_357','ammo_357_hp',
+  'wpn_ump','wpn_revolver','wpn_burstcarb','wpn_pdw',
+  'att_reflex','att_prism','att_lincomp','att_flashhider','att_stubby','att_stock_pdw','att_laser_tgt','att_mag_32','att_barrel_carbine');
+
+// LOOT — seed into the raid pools (push -> merge-safe vs the tables above)
+DATA.loot.crate_common.push(
+  {id:'ammo_57',w:3,min:10,max:30},{id:'ammo_357',w:3,min:6,max:16},{id:'wpn_revolver',w:1});
+DATA.loot.crate_rare.push(
+  {id:'wpn_pdw',w:2},{id:'wpn_ump',w:2},{id:'wpn_burstcarb',w:2},{id:'wpn_autoshotgun',w:1},{id:'wpn_battle',w:1},
+  {id:'att_prism',w:2},{id:'att_scope8',w:1},{id:'att_mag_minidrum',w:1},{id:'att_barrel_dmr',w:1},{id:'att_laser_tgt',w:2},
+  {id:'ammo_57_ap',w:2,min:15,max:40});
+DATA.loot.enemy_drop.push(
+  {id:'ammo_57',w:2,min:8,max:24},{id:'ammo_357',w:2,min:4,max:12});
+DATA.loot.cont_weapon.push(
+  {id:'ammo_57',w:3,min:15,max:40},{id:'ammo_57_ap',w:2,min:15,max:40},
+  {id:'ammo_357',w:3,min:8,max:18},{id:'ammo_357_hp',w:2,min:8,max:18},
+  {id:'att_reflex',w:3},{id:'att_duckbill',w:2},{id:'att_skelgrip',w:3},{id:'att_stubby',w:3},
+  {id:'att_stock_wire',w:2},{id:'att_stock_pdw',w:2},{id:'att_mag_32',w:3},{id:'att_flashhider',w:3},{id:'att_barrel_carbine',w:2},
+  {id:'wpn_ump',w:2},{id:'wpn_revolver',w:2},{id:'wpn_burstcarb',w:2});
+DATA.loot.cont_safe.push(
+  {id:'att_scope8',w:1},{id:'wpn_battle',w:1},{id:'wpn_pdw',w:1});
+
+// RECIPES — printable specialty rounds for the new calibers (additive)
+if(Array.isArray(DATA.recipes)) DATA.recipes.push(
+  {id:'r_57',     name:'Print 5.7 PDW (x30)', station:'printer', out:{id:'ammo_57',qty:30},  in:[{id:'mat_filament',qty:2},{id:'mat_scrap',qty:1}]},
+  {id:'r_57_ap',  name:'Print 5.7 AP (x30)',  station:'printer', out:{id:'ammo_57_ap',qty:30},in:[{id:'mat_filament',qty:2},{id:'mat_scrap',qty:2},{id:'mat_elec',qty:1}]},
+  {id:'r_357',    name:'Load .357 Mag (x20)', station:'printer', out:{id:'ammo_357',qty:20}, in:[{id:'mat_powder',qty:2},{id:'mat_scrap',qty:1}]});
+
+// re-stamp ids for everything new in this section (serialize/icons/stacking)
+for(const k in DATA.items) if(!DATA.items[k].id) DATA.items[k].id=k;
+// =====================================================================
