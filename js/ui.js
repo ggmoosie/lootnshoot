@@ -4,7 +4,8 @@
 import { DATA } from "./data.js";
 import { S, MODE, EQUIP_SLOTS, Events } from "./state.js";
 import { GFX } from "./gfx.js";
-import { iconFor, keyName, clamp } from "./util.js";
+import { keyName, clamp } from "./util.js";
+import { iconHTML } from "./icons.js";
 import { Save } from "./save.js";
 import { Progression } from "./progression.js";
 import { Input } from "./input.js";
@@ -101,6 +102,18 @@ export const UI = (function(){
   // ---------- overlay helpers ----------
   const OVS=['ovStart','ovInv','ovVendor','ovCraft','ovSkill','ovExtract','ovResult','ovPause','ovSettings','ovMod','ovReport'];
   function hideAll(){ OVS.forEach(o=>$(o).classList.remove('show')); }
+  // Is any closeable menu/overlay currently shown? Used by the global Tab handler.
+  // ovStart (the boot card) and ovResult (raid summary) are NOT user-dismissable
+  // mid-flow, so Tab leaves those alone.
+  function anyOverlayOpen(){ return OVS.some(o=>o!=='ovStart'&&o!=='ovResult'&&$(o)&&$(o).classList.contains('show')); }
+  // Close whatever overlay is up and hand control back to gameplay. PAUSE resumes
+  // the raid; everything else routes through closeMenus (which re-locks the pointer
+  // when returning to RAID/HUB). Respects nothing if no overlay is open.
+  function closeTopOverlay(){
+    if(!anyOverlayOpen()) return;
+    if(S.mode===MODE.PAUSE){ resume(); return; }
+    closeMenus();
+  }
   function closeMenus(){ hideAll(); hideCtx(); hideTip(); clearReveal(); loot=null; openCont=null; Inventory.setExternal(null); disposeGunPreview(); disposeMannequin(); disposeCorpseMannequin();
     if(S.mode===MODE.MENU){ const pm=prevMode; S.setMode(pm);
       if(pm===MODE.PAUSE){ $('ovPause').classList.add('show'); }
@@ -256,7 +269,7 @@ export const UI = (function(){
     let h=`<div class="col"><div class="colT"><span>${label}</span><span class="cap">${grid.w}×${grid.h}</span></div><div class="gridscroll"><div class="grid" data-gk="${gk}" style="width:${grid.w*CELL}px;height:${grid.h*CELL}px">`;
     for(let y=0;y<grid.h;y++)for(let x=0;x<grid.w;x++) h+=`<div class="cell" style="left:${x*CELL}px;top:${y*CELL}px;width:${CELL}px;height:${CELL}px"></div>`;
     for(const it of grid.items){ const w=(it.rot?it.def.size[1]:it.def.size[0])*CELL, hh=(it.rot?it.def.size[0]:it.def.size[1])*CELL; const small=it.def.size[0]===1&&it.def.size[1]===1;
-      h+=`<div class="gi r-${it.def.rarity||1}${small?' small':''}" data-uid="${it.uid}" style="left:${it.x*CELL}px;top:${it.y*CELL}px;width:${w}px;height:${hh}px"><span class="ic">${iconFor(it.def)}</span><span class="nm">${it.def.name}</span>${it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
+      h+=`<div class="gi r-${it.def.rarity||1}${small?' small':''}" data-uid="${it.uid}" style="left:${it.x*CELL}px;top:${it.y*CELL}px;width:${w}px;height:${hh}px"><span class="ic">${iconHTML(it.def)}</span><span class="nm">${it.def.name}</span>${it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
     h+=`</div></div></div>`; return h;
   }
   // slotHTML(slot, item, corpse?) — one paper-doll slot. For the player (corpse=false)
@@ -266,8 +279,12 @@ export const UI = (function(){
   function slotHTML(s,it,corpse){ const meta={primary:['Primary','🔫'],secondary:['Sidearm','🔫'],helmet:['Helmet','⛑️'],armor:['Armor','🛡️'],clothing:['Clothing','👕'],rig:['Rig','🦺'],backpack:['Pack','🎒']}[s];
     const wide = (s==='primary'||s==='secondary');
     const tag = corpse ? `data-cslot="${s}"` : `data-slot="${s}"`;
-    return `<div class="eslot ${wide?'wpn ':''}${corpse?'cslot ':''}${it?'full r-'+(it.def.rarity||1):''}" style="grid-area:${s}" ${tag} ${it?`data-uid="${it.uid}"`:''}>
-      <span class="ei">${it?iconFor(it.def):meta[1]}</span><span class="sn">${it&&wide?it.def.name:meta[0]}</span>${it&&it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
+    // weapon slots also advertise themselves as attachment DROP targets (data-wslot)
+    // so a mod dragged from a grid onto the equipped gun attaches to its matching
+    // slot. Empty slots keep the emoji placeholder; filled slots show the icon.
+    const wtag = (!corpse && wide) ? ` data-wslot="${s}"` : '';
+    return `<div class="eslot ${wide?'wpn ':''}${corpse?'cslot ':''}${it?'full r-'+(it.def.rarity||1):''}" style="grid-area:${s}" ${tag}${wtag} ${it?`data-uid="${it.uid}"`:''}>
+      <span class="ei">${it?iconHTML(it.def):meta[1]}</span><span class="sn">${it&&wide?it.def.name:meta[0]}</span>${it&&it.qty>1?`<span class="q">${it.qty}</span>`:''}</div>`; }
 
   // ---- the player's loadout (paper-doll + stat readout) as a column ----
   function playerLoadoutHTML(){
@@ -347,12 +364,16 @@ export const UI = (function(){
     } else {
       body=`<div class="invwrap">${playerLoadoutHTML()}${playerGridsHTML()}${contPanel}</div>`;
     }
-    $('invCard').innerHTML=`<div class="eb">${loot?'Body // Loot':'Loadout // Inventory'}</div><h1>${loot?'Loot':'Gear'}</h1>
-      ${body}
-      <div style="margin-top:16px">
-        <span class="btn" id="invClose" style="width:auto;display:inline-block;margin:0"><span class="k">ESC</span> Close</span>
-        ${loot?'<span class="btn" id="invTakeAll" style="width:auto;display:inline-block;margin:0 0 0 8px"><span class="k">⇪</span> Take all</span>':''}
-      </div>`;
+    // Close pinned at the TOP (cross-project convention), alongside the title and the
+    // loot-only "Take all" action; the grids/loadout follow below.
+    $('invCard').innerHTML=`<div class="shophead" style="align-items:center">
+        <div><div class="eb">${loot?'Body // Loot':'Loadout // Inventory'}</div><h1 style="margin:0">${loot?'Loot':'Gear'}</h1></div>
+        <div style="display:flex;align-items:center;gap:8px">
+          ${loot?'<span class="btn" id="invTakeAll" style="width:auto;display:inline-block;margin:0"><span class="k">⇪</span> Take all</span>':''}
+          <span class="btn" id="invClose" style="width:auto;display:inline-block;margin:0"><span class="k">ESC</span> Close</span>
+        </div>
+      </div>
+      ${body}`;
     $('invClose').onclick=closeMenus;
     if(loot) $('invTakeAll').onclick=takeAll;
     $('invCard').querySelectorAll('.grid[data-gk]').forEach(el=>{ el.__grid=gridMap[el.dataset.gk]; });
@@ -498,7 +519,7 @@ export const UI = (function(){
     if(ev.shiftKey || ev.ctrlKey || ev.metaKey){ ev.preventDefault(); quickMove(uid); return; }
     ev.preventDefault(); hideCtx(); hideTip();
     drag={ uid, rot:loc.item.rot, def:loc.item.def };
-    const g=$('dragGhost'); sizeGhost(); g.innerHTML=`<span>${iconFor(loc.item.def)}</span>`; g.style.display='flex';
+    const g=$('dragGhost'); sizeGhost(); g.innerHTML=iconHTML(loc.item.def,'ghosticon'); g.style.display='flex';
     moveGhost(ev.clientX,ev.clientY); this.classList.add('dragging');
   }
   // is this located item on the open external actor (corpse equip/grids or crate)?
@@ -552,10 +573,18 @@ export const UI = (function(){
   function gridUnder(x,y){ let el=document.elementFromPoint(x,y); while(el && !(el.classList&&el.classList.contains('grid'))) el=el.parentElement; return el; }
   function slotUnder(x,y){ let el=document.elementFromPoint(x,y); while(el && !(el.dataset&&el.dataset.slot)) el=el.parentElement; return el; }
   function modslotUnder(x,y){ let el=document.elementFromPoint(x,y); while(el && !(el.dataset&&el.dataset.modslot)) el=el.parentElement; return el; }
-  function clearHi(){ document.querySelectorAll('.grid.drop-ok,.grid.drop-bad,.eslot.drop-ok,.mtile.drop-ok').forEach(el=>el.classList.remove('drop-ok','drop-bad')); }
+  // an equipped-weapon paper-doll slot under the cursor (attachment DROP target)
+  function wslotUnder(x,y){ let el=document.elementFromPoint(x,y); while(el && !(el.dataset&&el.dataset.wslot)) el=el.parentElement; return el; }
+  // does weapon item `wit` accept an attachment whose effect/def slot is `attSlot`,
+  // and is that slot free? Used to validate a mod→weapon drop (gunsmith + paper-doll).
+  function attachSlotOf(def){ const eff=DATA.attachments&&DATA.attachments[def.id]; const s=(eff&&eff.slot)||def.slot; return s==='tactical'?'foregrip':s; }
+  function weaponAccepts(wit, attDef){ if(!wit||wit.def.type!=='weapon') return false; const wDef=DATA.weapons[wit.def.weapon]; if(!wDef||!wDef.slots) return false; const s=attachSlotOf(attDef); return wDef.slots.includes(s); }
+  function clearHi(){ document.querySelectorAll('.grid.drop-ok,.grid.drop-bad,.eslot.drop-ok,.eslot.drop-bad,.mtile.drop-ok,.bpcard.drop-ok,.bpcard.drop-bad').forEach(el=>el.classList.remove('drop-ok','drop-bad')); }
   function highlight(x,y){ clearHi(); if(!drag) return;
     // weapon-mod slot targets take priority while the gunsmith is open
-    if(modUid!=null && drag.def.type==='attachment'){ const ms=modslotUnder(x,y); if(ms){ ms.classList.add(ms.dataset.modslot===drag.def.slot?'drop-ok':'drop-bad'); return; } }
+    if(modUid!=null && drag.def.type==='attachment'){ const ms=modslotUnder(x,y); if(ms){ ms.classList.add(ms.dataset.modslot===attachSlotOf(drag.def)?'drop-ok':'drop-bad'); return; } }
+    // dragging an attachment onto an EQUIPPED weapon in the paper-doll → attach
+    if(drag.def.type==='attachment'){ const ws=wslotUnder(x,y); if(ws){ const wit=S.profile.equip[ws.dataset.wslot]; ws.classList.add(weaponAccepts(wit,drag.def)?'drop-ok':'drop-bad'); return; } }
     const gel=gridUnder(x,y);
     if(gel&&gel.__grid){ const r=gel.getBoundingClientRect(); const w=drag.rot?drag.def.size[1]:drag.def.size[0], h=drag.rot?drag.def.size[0]:drag.def.size[1];
       const gx=clamp(Math.floor((x-r.left)/CELL)-Math.floor(w/2),0,gel.__grid.w-w), gy=clamp(Math.floor((y-r.top)/CELL)-Math.floor(h/2),0,gel.__grid.h-h);
@@ -564,7 +593,15 @@ export const UI = (function(){
   function drop(d,x,y){
     // gunsmith: drop an attachment onto its matching slot to install
     if(modUid!=null && d.def.type==='attachment'){ const ms=modslotUnder(x,y);
-      if(ms){ if(ms.dataset.modslot===d.def.slot){ Inventory.installOn(modUid, d.uid); renderMod(); refreshHUD(); } return; } }
+      if(ms){ if(ms.dataset.modslot===attachSlotOf(d.def)){ if(Inventory.installOn(modUid, d.uid)) Audio.play('ui'); renderMod(); refreshHUD(); } return; } }
+    // inventory paper-doll: drop an attachment onto an EQUIPPED weapon to attach it
+    // to the right slot (installOn validates slot compatibility + pops any existing
+    // part back to the kit). This is the drag-mod-onto-weapon path outside the gunsmith.
+    if(d.def.type==='attachment'){ const ws=wslotUnder(x,y);
+      if(ws){ const wit=S.profile.equip[ws.dataset.wslot];
+        if(wit && weaponAccepts(wit,d.def)){ if(Inventory.installOn(wit.uid, d.uid)){ Audio.play('ui'); toast('Installed '+d.def.name,'pos'); } }
+        else toast('That part doesn’t fit this weapon','neg');
+        renderInventory(); refreshHUD(); return; } }
     const slotEl=slotUnder(x,y);
     if(slotEl){ const slot=slotEl.dataset.slot, def=d.def;
       if(def.type==='weapon'){ if(slot==='primary'||slot==='secondary') Inventory.equip(d.uid,slot); }
@@ -587,7 +624,13 @@ export const UI = (function(){
     // CONTAINER (case/bag/rig with its own grid): view/manage its contents inline.
     // Listed first so it's the primary affordance for a stored container.
     if(Inventory.isContainer(it)) acts.push([openCont===uid?'Close contents':'Open contents',()=>{ openContainer(uid); }]);
-    if(def.type==='weapon'){ acts.push(['Equip Primary',()=>Inventory.equip(uid,'primary')]); acts.push(['Equip Secondary',()=>Inventory.equip(uid,'secondary')]); acts.push(['Modify weapon',()=>openMod(uid)]); }
+    if(def.type==='weapon'){ acts.push(['Equip Primary',()=>Inventory.equip(uid,'primary')]); acts.push(['Equip Secondary',()=>Inventory.equip(uid,'secondary')]); acts.push(['Modify weapon',()=>openMod(uid)]);
+      // quick detach: list each installed attachment so a mod can be pulled straight
+      // back to the stash/kit without opening the gunsmith (Inventory.removeAttachment
+      // routes it to carried/stash and updates the weapon's stats/visuals).
+      const att=it.inst&&it.inst.attachments?it.inst.attachments:{};
+      for(const sl of Object.keys(att)){ const aDef=DATA.items[att[sl]]; if(aDef) acts.push(['Detach '+aDef.name,()=>Inventory.removeAttachment(uid, sl)]); }
+    }
     else if(['armor','helmet','clothing','rig','backpack'].includes(def.type)) acts.push(['Equip',()=>Inventory.equip(uid)]);
     else if(def.type==='attachment') acts.push(['Install on weapon',()=>Inventory.installAttachment(uid)]);
     else if(def.type==='med'||def.type==='food') acts.push(['Use',()=>{ Player.heal(def.heal); if(def.cure)Status.clear('bleed'); Inventory.dropOrDestroy(uid); }]);
@@ -692,10 +735,13 @@ export const UI = (function(){
     for(const sl of wDef.slots){ const L=layout[sl]; if(!L) continue;
       const cur=it.inst.attachments[sl], curDef=cur?DATA.items[cur]:null; const open=openSlot===sl;
       const opts = (cur?`<div class="bpopt rem" data-rem="${sl}"><span class="bpic">✕</span><span>Remove</span></div>`:'')
-        + ((avail[sl]||[]).map(a=>`<div class="bpopt ${cur===a.def.id?'sel':''}" data-ins="${a.uid}"><span class="bpic">${iconFor(a.def)}</span><span>${a.def.name}</span></div>`).join('')
+        + ((avail[sl]||[]).map(a=>`<div class="bpopt ${cur===a.def.id?'sel':''}" data-ins="${a.uid}"><span class="bpic">${iconHTML(a.def)}</span><span>${a.def.name}</span></div>`).join('')
            || (cur?'':'<div class="bpopt none">No parts in your kit</div>'));
-      cards+=`<div class="bpcard ${cur?'filled':''} ${open?'open':''}" style="left:${L.card[0]}%;top:${(L.card[1]/60*100).toFixed(2)}%">
-        <div class="bphd" data-toggle="${sl}"><span class="bpic">${cur?iconFor(curDef):slotIcon[sl]}</span>
+      // data-modslot makes the card header a real attachment DROP target (this was
+      // missing — the drag-attach path in drop()/highlight() looked for it and found
+      // nothing, so gunsmith drag-to-install never fired). Click-toggle still works.
+      cards+=`<div class="bpcard ${cur?'filled':''} ${open?'open':''}" data-modslot="${sl}" style="left:${L.card[0]}%;top:${(L.card[1]/60*100).toFixed(2)}%">
+        <div class="bphd" data-toggle="${sl}"><span class="bpic">${cur?iconHTML(curDef):slotIcon[sl]}</span>
           <span class="bptxt"><span class="bpsl">${sl}</span><span class="bpnm">${cur?curDef.name:'— empty'}</span></span><span class="bpcar">▾</span></div>
         ${open?`<div class="bpdrop">${opts}</div>`:''}</div>`;
     }
@@ -710,10 +756,18 @@ export const UI = (function(){
       ['Hip Acc',st.hipAccuracy,bare.hipAccuracy,1],
     ];
     const statHTML=rows.map(r=>{ const cur=r[1], bs=r[2], better=r[3]; let cls=''; if(Math.abs(cur-bs)>1e-6) cls=((cur>bs)===(better>0))?'up':'dn'; const fmt=v=>(Math.round(v*1000)/1000); return `<div class="bpstat"><span class="sl">${r[0]}</span><span class="sv ${cls}">${fmt(cur)}</span></div>`; }).join('');
-    $('modCard').innerHTML=`<div class="eb">Gunsmith // Live Render</div><div class="shophead"><h1 style="margin:0">${it.def.name}</h1><div class="creditpill">${Object.keys(it.inst.attachments||{}).length}/${wDef.slots.length} slots</div></div>
+    // Close/Done pinned at the TOP (cross-project convention) next to the title +
+    // slot-fill pill; the 3D stage and the stat readout follow below.
+    $('modCard').innerHTML=`<div class="shophead" style="align-items:center">
+        <div><div class="eb">Gunsmith // Live Render</div><h1 style="margin:0">${it.def.name}</h1></div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="creditpill">${Object.keys(it.inst.attachments||{}).length}/${wDef.slots.length} slots</div>
+          <div class="btn" id="modClose" style="width:auto;margin:0;display:inline-block"><span class="k">ESC</span> Done</div>
+        </div>
+      </div>
+      <div class="bphint">Drag a part onto its slot to attach · drag an installed part off (or tap ✕) to send it back to your kit.</div>
       <div class="bpstage" id="bpstage">${cards}</div>
-      <div class="bpstats">${statHTML}</div>
-      <div class="btn" id="modClose" style="margin-top:8px;width:auto;display:inline-block"><span class="k">ESC</span> Done</div>`;
+      <div class="bpstats">${statHTML}</div>`;
     // create the persistent 3D canvas + preview once; on later re-renders just
     // re-attach the existing canvas (innerHTML above wiped the stage) so the
     // WebGL context survives, then rebuild the model to reflect the new config.
@@ -885,7 +939,7 @@ export const UI = (function(){
           ? `<div class="shopmeta" style="color:var(--bad)">Out · ${si.restockIn?'next '+fmtRestock(si.restockIn):'restocking'}</div>`
           : `<div class="shopmeta">Stock ${si.qty}/${si.max}${si.restockIn?` · +1 in ${fmtRestock(si.restockIn)}`:''}</div>`;
         return `<div class="shopcard r-${d.rarity||1}">
-          <div class="shopic">${iconFor(d)}</div>
+          <div class="shopic">${iconHTML(d)}</div>
           <div class="shopnm">${d.name}</div><div class="shopmeta">${d.type}${d.size?` · ${d.size[0]}×${d.size[1]}`:''}</div>
           ${stockLine}
           <button class="shopbuy ${can?'':'no'}" data-buy="${id}" ${out?'disabled':''}>${out?'Out':p+'c'}</button></div>`; }).join('')+`</div>`;
@@ -894,7 +948,7 @@ export const UI = (function(){
       const sellTotal=items.reduce((a,it)=>a+Inventory.sellValue(it),0);
       body = items.length ? `<div class="shophead" style="margin:2px 0 10px"><span style="font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:1px;text-transform:uppercase;">${items.length} item${items.length>1?'s':''} · ${sellTotal}c total</span><button class="shopbuy sell" id="sellAll" style="width:auto">⇪ Sell all +${sellTotal}c</button></div>`
         + `<div class="shopgrid">`+items.map(it=>`<div class="shopcard r-${it.def.rarity||1}">
-          <div class="shopic">${iconFor(it.def)}</div>
+          <div class="shopic">${iconHTML(it.def)}</div>
           <div class="shopnm">${it.def.name}</div><div class="shopmeta">${it.def.type}${it.qty>1?` · ×${it.qty}`:''}</div>
           <button class="shopbuy sell" data-sell="${it.uid}">+${Inventory.sellValue(it)}c</button></div>`).join('')+`</div>`
         : '<div class="emptyState"><span class="ic">📦</span>Stash is empty — bring back loot from a raid to sell.</div>';
@@ -902,7 +956,7 @@ export const UI = (function(){
       const list=Vendor.buybackList();
       body = list.length ? `<div class="shopgrid">`+list.map(b=>{ const d=DATA.items[b.id]||{}; const can=cr>=b.price;
         return `<div class="shopcard r-${d.rarity||1}">
-          <div class="shopic">${iconFor(d)}</div>
+          <div class="shopic">${iconHTML(d)}</div>
           <div class="shopnm">${b.name}</div><div class="shopmeta">recently sold${b.qty>1?` · ×${b.qty}`:''}</div>
           <button class="shopbuy ${can?'':'no'}" data-bb="${b.uid}">${b.price}c</button></div>`; }).join('')+`</div>`
         : '<div class="emptyState"><span class="ic">↩️</span>Nothing to buy back — items you sell linger here for 30 minutes.</div>';
@@ -1097,5 +1151,5 @@ export const UI = (function(){
     if($('ovReport') && $('ovReport').classList.contains('show')) renderReport(); });
 
   return { setObjective, prompt, hit, dmgDir, banner, flashReload, toast, refreshHUD, renderStart, toggleInventory, openStation,
-           openVendor, openCraft, openSkills, openLoot, openSettings, openMod, openReport, showExtractChoice, showResult, pause, resume, closeMenus };
+           openVendor, openCraft, openSkills, openLoot, openSettings, openMod, openReport, showExtractChoice, showResult, pause, resume, closeMenus, anyOverlayOpen, closeTopOverlay };
 })();

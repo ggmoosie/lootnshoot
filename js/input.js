@@ -78,11 +78,19 @@ export const Input = (function(){
       else if(a==='pickup') World.interact('pickup');
     }
     if(a==='interact' && (S.mode===MODE.RAID||S.mode===MODE.HUB)) World.interact('interact');
+    // TAB — universal "close any open overlay" key. If ANY menu/overlay is showing
+    // (inventory, vendor, settings, gunsmith, map, etc.) Tab closes it and re-locks
+    // for gameplay. Only when nothing is open does Tab fall through to its bound
+    // action (default = open the inventory). Bound separately from the action map so
+    // it works even when the bound key isn't Tab and regardless of which menu is up.
+    if(e.code==='Tab'){
+      e.preventDefault();
+      if(UI.anyOverlayOpen && UI.anyOverlayOpen()){ UI.closeTopOverlay(); return; }
+    }
     if(a==='inventory'){ e.preventDefault();
-      // TAB toggles: open from HUB/RAID, and also CLOSE when it's already open
-      // (open puts us in MENU mode, so we must allow MENU+visible inventory here).
-      const invOpen=(()=>{ const o=document.getElementById('ovInv'); return !!(o&&o.classList.contains('show')); })();
-      if(S.mode===MODE.HUB||S.mode===MODE.RAID||invOpen) UI.toggleInventory(); }
+      // open the inventory from HUB/RAID. (Closing an already-open overlay is handled
+      // by the universal Tab branch above + Escape, so this only needs the open path.)
+      if(S.mode===MODE.HUB||S.mode===MODE.RAID) UI.toggleInventory(); }
     if(e.code==='Escape'){ if(S.mode===MODE.MENU) UI.closeMenus(); else if(S.mode===MODE.PAUSE) UI.resume(); else if(S.mode===MODE.RAID) UI.pause(); else if(S.mode===MODE.HUB) UI.openStation('settings'); }
   });
   addEventListener('keyup',e=> keys[e.code]=false);
@@ -95,12 +103,29 @@ export const Input = (function(){
 
   GFX.dom.addEventListener('mousedown',e=>{ if(e.button===0&&S.mode===MODE.RAID&&st.locked) st.firing=true; if(e.button===2&&S.mode===MODE.RAID) st.ads=true; });
   addEventListener('mouseup',e=>{ if(e.button===0) st.firing=false; if(e.button===2) st.ads=false; });
+  // pointerup as a second release path: a mouseup can be swallowed if the button is
+  // released over an element (or iframe) that eats the event, or after focus shifts.
+  // Clearing here too means a held fire/ADS can never get stuck "down".
+  addEventListener('pointerup',e=>{ if(e.button===0) st.firing=false; if(e.button===2) st.ads=false; });
   addEventListener('contextmenu',e=>e.preventDefault());
+
+  // ---- never-stuck guards (the "mouse gets stuck/broken" fix) ----
+  // Losing window focus, tabbing away, or the page going to the background can
+  // strand held mouse buttons / keys "down" (the matching up event fires on a
+  // window we're no longer listening to). Zero ALL input on any of those so the
+  // player never returns to a frozen look, a stuck trigger, or a stuck sprint.
+  addEventListener('blur', clearKeys);
+  document.addEventListener('visibilitychange', ()=>{ if(document.hidden) clearKeys(); });
 
   GFX.dom.addEventListener('click',()=>{ if(st.isTouch) return; if((S.mode===MODE.HUB||S.mode===MODE.RAID)&&!st.locked) relock(); });
   document.addEventListener('pointerlockchange',()=>{ st.locked=document.pointerLockElement===GFX.dom;
     if(st.locked){ wantLock=false; clearTimeout(relockTimer); }      // got it — stop retrying
-    if(!st.locked&&S.mode===MODE.RAID) UI.pause(); });
+    // Lost the lock: ALWAYS drop held mouse buttons (a click that opened a menu, or
+    // the browser yanking the lock, leaves firing/ADS true otherwise → stuck trigger
+    // when we re-lock). Only auto-pause when the loss happened mid-RAID with no menu
+    // already taking over (an overlay open = the player chose to leave gameplay).
+    if(!st.locked){ st.firing=false; st.ads=false;
+      if(S.mode===MODE.RAID) UI.pause(); } });
   document.addEventListener('mousemove',e=>{ if(!st.locked) return;
     GFX.yaw.rotation.y -= e.movementX*sens();
     GFX.pitch.rotation.x = clamp(GFX.pitch.rotation.x - e.movementY*sens()*invY(), -1.5, 1.5);
