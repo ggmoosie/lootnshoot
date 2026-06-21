@@ -1300,7 +1300,9 @@ export const UI = (function(){
       <div class="set"><span class="sl">Mouse <b style="color:var(--amber)">L</b> Fire · <b style="color:var(--amber)">R</b> ADS</span><span></span></div>
       <div style="margin-top:12px">
         <span class="btn" id="setReset" style="width:auto;display:inline-block;margin:0"><span class="k">↺</span> Reset binds</span>
-      </div>`;
+      </div>
+      <div class="colT" style="margin-top:18px"><span>Cloud Save</span><span class="cap">syncs across all the games</span></div>
+      <div id="cloudPanel"></div>`;
     const sens=$('setSens'), fov=$('setFov');
     sens.oninput=()=>{ s.sens=parseFloat(sens.value); $('setSensV').textContent=s.sens.toFixed(2)+'×'; Save.save(); };
     fov.oninput=()=>{ s.fov=parseInt(fov.value); $('setFovV').textContent=s.fov+'°'; Input.applySettings(); Save.save(); };
@@ -1313,6 +1315,51 @@ export const UI = (function(){
     $('setClose').onclick=closeMenus;
     $('settingsCard').querySelectorAll('[data-bind]').forEach(el=>{ el.onclick=()=>{ el.classList.add('bind'); el.textContent='press…';
       Input.beginCapture(c=>{ for(const k in s.binds) if(s.binds[k]===c) delete s.binds[k]; s.binds[el.dataset.bind]=c; Save.save(); renderSettings(); }); }; });
+    renderCloudSave();
+  }
+
+  // ---------- CLOUD SAVE (Settings panel) ----------
+  // Manual companion to the SILENT auto-sync (Save.syncOnAuth). Shows who you're
+  // signed in as, plus two explicit overrides: force-push this device's save up, or
+  // force-restore the cloud copy down. Signed out (or Firebase unavailable) → a clear
+  // "sign in to sync" hint instead. Wired straight to Save's force wrappers; this UI
+  // owns no sync logic. Guarded so a busy op can't double-fire.
+  let _cloudBusy=false;
+  function renderCloudSave(){
+    const panel=$('cloudPanel'); if(!panel) return;
+    const st=Save.cloudStatus();
+    if(!st.ready){
+      // Not signed in (or Firestore down) → no buttons, just a hint. If the SDK is
+      // entirely absent we can't sync at all; otherwise nudge them to sign in.
+      const txt = Account.available()
+        ? 'Sign in on the start menu to back up your progress and sync it across every game.'
+        : 'Cloud save unavailable — playing offline. Your progress is saved on this device only.';
+      panel.innerHTML=`<div class="set"><span class="sl" style="color:var(--dim)">◇ ${txt}</span><span></span></div>`;
+      return;
+    }
+    panel.innerHTML=`
+      <div class="set"><span class="sl">Signed in as <b style="color:var(--go)">${escAcct(st.username||'operator')}</b></span>
+        <span class="sv" id="cloudStat" style="color:var(--go)">◈ auto-sync on</span></div>
+      <div class="set"><span class="sl">Upload this device's save → cloud</span>
+        <span class="btn" id="cloudPush" style="width:auto;margin:0;padding:6px 14px"><span class="k">▲</span> Upload</span></div>
+      <div class="set"><span class="sl">Restore from cloud → this device</span>
+        <span class="btn" id="cloudPull" style="width:auto;margin:0;padding:6px 14px"><span class="k">▼</span> Restore</span></div>`;
+    const stat=$('cloudStat'), push=$('cloudPush'), pull=$('cloudPull');
+    const setStat=(t,c)=>{ if(stat){ stat.textContent=t; stat.style.color=c||'var(--go)'; } };
+    const run=async (fn, working, ok, fail, after)=>{
+      if(_cloudBusy) return; _cloudBusy=true;
+      if(push) push.classList.add('disabled'); if(pull) pull.classList.add('disabled');
+      setStat(working,'var(--amber)');
+      let good=false; try{ good=await fn(); }catch(_){ good=false; }
+      _cloudBusy=false;
+      if(push) push.classList.remove('disabled'); if(pull) pull.classList.remove('disabled');
+      setStat(good?ok:fail, good?'var(--go)':'var(--bad)');
+      if(good && after) after();
+    };
+    if(push) push.onclick=()=> run(()=>Save.pushNow(), '… uploading', '✓ uploaded to cloud', '✕ upload failed');
+    // Restore overwrites the live profile, so refresh the dependent views after a pull.
+    if(pull) pull.onclick=()=> run(()=>Save.pullNow(), '… restoring', '✓ restored from cloud', '✕ nothing to restore',
+      ()=>{ Progression.recompute(); Input.applySettings(); refreshHUD(); renderSettings(); });
   }
 
   // ---------- VENDOR ----------

@@ -180,5 +180,38 @@ export const Save = (function(){
     return adopted;
   }
 
-  return { newProfile, save, load, wipe, syncOnAuth };
+  // ---- MANUAL cloud controls (Settings "Cloud Save" panel) ----
+  // The auto-sync (syncOnAuth) stays silent + newest-wins; these are the explicit,
+  // user-driven overrides for peace of mind. They reuse the SAME transport functions
+  // (cloudRead/cloudWrite + the localStorage wrap helpers) — no new sync logic.
+  //
+  // pushNow(): FORCE this device's local save up to the cloud, overwriting whatever's
+  //   there (regardless of timestamps). Used by "Upload this device's save → cloud".
+  // pullNow(): FORCE the cloud copy down, overwriting localStorage AND the live
+  //   in-memory profile. Used by "Restore from cloud". Returns true on success.
+  // Both no-op (return false) when not signed in / Firestore down, and never throw.
+  function cloudStatus(){
+    return { ready:Account.cloudReady(), uid:Account.uid(),
+             username:(Account.current()&&Account.current().username)||null };
+  }
+  async function pushNow(){
+    if(!Account.cloudReady() || !S.profile) return false;
+    let str; try{ str=serProfile(S.profile); }catch(_){ return false; }
+    if(!looksReal(str)) return false; // never push an empty/default save up
+    const ts=Date.now();
+    lsWriteWrap(str, ts);                 // keep local in lock-step with what we send
+    return cloudWrite(str, ts);           // overwrites the cloud doc (force push)
+  }
+  async function pullNow(){
+    if(!Account.cloudReady()) return false;
+    const cloud=await cloudRead();        // {save, ts} | null
+    if(!cloud || !looksReal(cloud.save)) return false; // nothing real to restore
+    lsWriteWrap(cloud.save, cloud.ts); _baseTs=cloud.ts; // mirror down (force pull)
+    // adopt it into the live profile immediately so the change is visible without a reload
+    try{ S.profile=desProfile(cloud.save); }catch(_){ return false; }
+    try{ Events.emit('save:cloud-pulled'); }catch(_){}
+    return true;
+  }
+
+  return { newProfile, save, load, wipe, syncOnAuth, cloudStatus, pushNow, pullNow };
 })();
