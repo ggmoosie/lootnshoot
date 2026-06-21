@@ -53,12 +53,12 @@ Index of every top-level exported symbol in `js/*.js`, grouped by file.
 
 ## js/inventory.js
 
-- `defaultInst` (function) — js/inventory.js:64
-- `desItem` (function) — js/inventory.js:80
+- `defaultInst` (function) — js/inventory.js:68
+- `desItem` (function) — js/inventory.js:86
 - `Grid` (class) — js/inventory.js:9
-- `Inventory` (const) — js/inventory.js:88
-- `newItem` (function) — js/inventory.js:69
-- `serItem` (function) — js/inventory.js:73
+- `Inventory` (const) — js/inventory.js:95
+- `newItem` (function) — js/inventory.js:74
+- `serItem` (function) — js/inventory.js:78
 
 ## js/loot.js
 
@@ -132,7 +132,7 @@ _no top-level exports_
 
 ## js/ui.js
 
-- `UI` (const) — js/ui.js:29
+- `UI` (const) — js/ui.js:28
 
 ## js/util.js
 
