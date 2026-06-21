@@ -1657,8 +1657,18 @@ export const UI = (function(){
   Events.on('threats:changed', ()=>{ $('thN').textContent=Enemies.aliveCount(); if(Input.isTouch) refreshTouchHUD(S.player,S.profile); });
   // Account state (sign-in / sign-out / restored session): refresh the menu's
   // account block, and the report form's name field if it's currently open.
-  Events.on('account:changed', ()=>{ _acctBusy=false; renderAccount();
-    if($('ovReport') && $('ovReport').classList.contains('show')) renderReport(); });
+  Events.on('account:changed', acct=>{ _acctBusy=false; renderAccount();
+    if($('ovReport') && $('ovReport').classList.contains('show')) renderReport();
+    // CLOUD SAVE: when a user is present (manual sign-in OR a restored session),
+    // reconcile the cloud save with localStorage (newest-wins). syncOnAuth no-ops
+    // when logged out / Firestore down, and swallows errors → game still plays.
+    if(acct) Save.syncOnAuth(); });
+  // After a cloud pull mirrored newer progress into localStorage: if we're still at
+  // the start screen (no profile loaded yet), re-render the start card so "Continue"
+  // reflects the pulled-down save. If already in-game we leave the live profile
+  // alone (don't yank state mid-raid) — the pulled bytes are in localStorage and
+  // will load next session / on the next "Continue".
+  Events.on('save:cloud-pulled', ()=>{ if(S.mode===MODE.BOOT && $('ovStart') && $('ovStart').classList.contains('show')) renderStart(); });
 
   return { setObjective, prompt, hit, dmgDir, banner, flashReload, toast, refreshHUD, renderStart, toggleInventory, openStation,
            openVendor, openCraft, openSkills, openLoot, openSettings, openMod, openReport, showExtractChoice, showResult, pause, resume, closeMenus, anyOverlayOpen, closeTopOverlay, useHotbarSlot };

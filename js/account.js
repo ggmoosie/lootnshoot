@@ -65,6 +65,14 @@ function loggedIn(){ return ACC.ok && !!ACC.user; }
 // {uid, username} when signed in, else null. The single accessor the rest of the
 // game uses — never reach into ACC directly.
 function current(){ return loggedIn() ? { uid:ACC.user.uid, username:ACC.username || emailLocal(ACC.user) } : null; }
+// ---- cloud-save transport accessors (used by Save's Firestore sync) ----
+// `db()` is the Firestore handle (null when Firestore is absent — cloud save then
+// no-ops and the game stays local-only); `uid()` is the signed-in user id or null.
+// The single seam Save uses to reach Firestore — it never touches `firebase` itself.
+function db(){ return ACC.db; }
+function uid(){ return loggedIn() ? ACC.user.uid : null; }
+// true only when we can actually read/write a cloud save (signed in AND Firestore up)
+function cloudReady(){ return loggedIn() && !!ACC.db; }
 
 // ---- auth actions (thin wrappers; promises so the UI can await + show errors) ----
 // Players supply a USERNAME; we map it to the synthetic `<username>@domain` email so
@@ -117,4 +125,4 @@ async function onAuth(u){
   Events.emit('account:changed', current());
 }
 
-export const Account = { init, available, loggedIn, current, signIn, signUp, signOut, errText, validUser };
+export const Account = { init, available, loggedIn, current, signIn, signUp, signOut, errText, validUser, db, uid, cloudReady };
