@@ -18,52 +18,84 @@ import { Raid } from "./raid.js";
 export const Player = (function(){
   const RADIUS=0.45, HEIGHT=1.7, BASE=6.2, SPRINT=1.6, JUMP=4.6, GRAV=15;
   let vig=0, stepT=0, velY=0, jumpY=0, grounded=true, movingFlag=false, eyeCur=HEIGHT;
-  // ---- vault / climb (placeholder traversal) -------------------------------
-  // A short scripted slide that carries the player OVER a low obstacle (vault) or
-  // UP-and-over a chest/head-high ledge (climb). Player Y is fixed-eye, so the
-  // "animation" is a cosmetic eye-height arc (rise then settle) + a small forward
-  // pitch dip — a clean placeholder for a real clamber anim. While a vault runs,
-  // normal WASD/jump/collision are suspended and the body lerps from start→land.
-  // Trigger = JUMP key while moving into a surmountable face (no rebind needed;
-  // a plain hop still happens when there's nothing to vault). jumpLatch debounces
-  // the key so one press = one traversal.
-  let vault=null, jumpLatch=false;
+  // ---- traversal: vault / mantle (proper FPS clamber) ----------------------
+  // World.vaultProbe classifies the obstacle ahead and returns ONE of three
+  // moves; player.js then carries the body along a believable, COLLISION-CHECKED
+  // path (rise to the lip → carry across → settle), interpolating Y as well as XZ
+  // so it never teleports and never clips through a wall:
+  //   • 'vault'      — OVER a low/thin obstacle, ending back at ground on the far side.
+  //   • 'mantleOnto' — UP ONTO a mid surface (crate/table), ending standing on top.
+  //   • 'mantleUp'   — UP a high ledge/wall-top, ending standing on the upper level.
+  // The path runs through the obstacle's LIP at peak height (top + a little), so a
+  // vault arcs over and back down while a mantle climbs and STAYS up. `groundY`
+  // tracks the standing floor under the player so post-vault gravity is correct
+  // (you can now end a traversal standing ON a crate, not snapped back to y=0).
+  // Trigger = JUMP key while moving into a surmountable face (a plain hop still
+  // happens when there's nothing to vault). jumpLatch = one press → one traversal.
+  let vault=null, jumpLatch=false, groundY=0, groundCur=0;
   function inVault(){ return !!vault; }
   function startVault(plan){
     const p=GFX.yaw.position;
+    // three keyframes for the body's FEET: start → lip (atop the obstacle) → land.
+    // Y is the foot height; eye = footY + HEIGHT. peak sits just over the lip so
+    // the camera clears the obstacle, then drops to landY (0 vault / top mantle).
+    const startY=groundY;
+    const peakY=plan.top + (plan.type==='vault'?0.12:0.18);
     vault={ t:0, dur:plan.dur||0.45, type:plan.type,
-            sx:p.x, sz:p.z, lx:plan.land.x, lz:plan.land.z,
-            cx:p.x, cz:p.z,                       // last KNOWN-CLEAR position on the path
-            peak:(plan.type==='climb'?0.85:0.5)+ (plan.rise||1)*0.15 };  // eye-arc height
+            sx:p.x, sz:p.z, lipx:plan.lip.x, lipz:plan.lip.z, lx:plan.land.x, lz:plan.land.z,
+            cx:p.x, cz:p.z, cy:startY,            // last KNOWN-CLEAR position on the path
+            startY, peakY, landY:plan.landY||0 };
     Audio.play('ui');
+  }
+  // sample the planned path at parameter k∈[0,1]: a 2-segment lerp start→lip→land
+  // for XZ, with Y rising to peakY at the lip then easing to landY.
+  function vaultSample(k){
+    const v=vault;
+    let x,z;
+    if(k<0.5){ const t=k/0.5; x=v.sx+(v.lipx-v.sx)*t; z=v.sz+(v.lipz-v.sz)*t; }
+    else      { const t=(k-0.5)/0.5; x=v.lipx+(v.lx-v.lipx)*t; z=v.lipz+(v.lz-v.lipz)*t; }
+    // Y: smooth up to peak by the lip (k=0.5), then ease down to landY. A vault
+    // dips back to 0; a mantle settles on top.
+    let y;
+    if(k<0.5){ const t=k/0.5; y=v.startY+(v.peakY-v.startY)*(t*t*(3-2*t)); }
+    else      { const t=(k-0.5)/0.5; y=v.peakY+(v.landY-v.peakY)*(t*t*(3-2*t)); }
+    return {x,z,y};
   }
   function tickVault(dt){
     vault.t+=dt; const k=Math.min(1, vault.t/vault.dur);
-    const ease=k<0.5 ? 2*k*k : 1-Math.pow(-2*k+2,2)/2;            // easeInOutQuad
+    const ease=k<0.5 ? 2*k*k : 1-Math.pow(-2*k+2,2)/2;            // easeInOutQuad over the whole move
+    const s=vaultSample(ease);
     const p=GFX.yaw.position;
-    // proposed slide point this frame — a STRAIGHT interp start→land (no lateral
-    // teleport: the land spot was probed along the player's facing).
-    const nx=vault.sx+(vault.lx-vault.sx)*ease;
-    const nz=vault.sz+(vault.lz-vault.sz)*ease;
-    // CLAMP the path: only advance if the next point is clear of walls. We're going
-    // OVER the obstacle (eye arcs above the lip), so a body-radius probe at the
-    // obstacle face would always fail — use a SMALL probe so we glide over the
-    // vaulted ledge but still STOP dead at any real wall we'd otherwise clip through.
-    if(World.spotClear(nx,nz,RADIUS*0.35)){ vault.cx=nx; vault.cz=nz; }
+    // CLAMP XZ: only advance if the next point is clear. The body is ABOVE the
+    // obstacle's top for the airborne middle of the move (eye/feet arc over the
+    // lip), so probe with a SMALL radius there — we glide over the vaulted ledge
+    // but still STOP dead at any real (taller) wall we'd otherwise clip through.
+    const overLip = s.y > vault.peakY-0.25;       // near the top of the arc → forgiving probe
+    const probeR = overLip ? RADIUS*0.3 : RADIUS*0.8;
+    if(World.spotClear(s.x,s.z,probeR)){ vault.cx=s.x; vault.cz=s.z; vault.cy=s.y; }
     p.x=vault.cx; p.z=vault.cz;
-    // cosmetic clamber arc: eye rises over the lip then settles to stand height
-    const arc=Math.sin(k*Math.PI)*vault.peak;
-    GFX.yaw.position.y=HEIGHT+arc*(vault.type==='climb'?0.7:0.45);
-    eyeCur=HEIGHT;                                                 // keep the base eye in sync for after
+    // feet at cy → eye at cy+HEIGHT; keep the smoothed eye in sync for after.
+    GFX.yaw.position.y=vault.cy+HEIGHT;
+    eyeCur=HEIGHT;
     // a brief downward pitch nudge so the camera "looks at the lip" mid-clamber
-    const dip=Math.sin(k*Math.PI)*0.18;
+    const dip=Math.sin(k*Math.PI)*0.16;
     GFX.pitch.rotation.x=clamp(GFX.pitch.rotation.x*(1-dt*6) - dip*dt*6, -1.5, 1.5);
-    if(k>=1){ jumpY=0; velY=0; grounded=true; GFX.yaw.position.y=HEIGHT;
-      // settle on the last clear point, then nudge fully clear of any wall we ended against
-      World.moveActor(GFX.yaw.position, {x:0,z:0}, RADIUS);
-      vault=null; }
+    if(k>=1){
+      jumpY=0; velY=0; grounded=true;
+      // record the standing floor (top of whatever we ended on) FIRST, so the
+      // settle push knows our foot height and won't shove us off a surface we just
+      // mantled onto (it only pushes out of taller walls, never the landing surface).
+      groundY = vault.landY;
+      World.moveActor(GFX.yaw.position, {x:0,z:0}, RADIUS, groundY);
+      // re-read the floor in case the settle nudge moved us onto/off a neighbour.
+      groundY = World.groundTopAt(GFX.yaw.position.x, GFX.yaw.position.z);
+      groundCur = groundY;                  // snap the smoothed floor so we don't ease post-mantle
+      GFX.yaw.position.y = groundY + HEIGHT;
+      eyeCur=HEIGHT;
+      vault=null;
+    }
   }
-  function spawn(x,z,faceY){ vault=null; GFX.yaw.position.set(x,HEIGHT,z); GFX.yaw.rotation.y=faceY||0; GFX.pitch.rotation.x=0; }
+  function spawn(x,z,faceY){ vault=null; groundY=World.groundTopAt?World.groundTopAt(x,z):0; groundCur=groundY; jumpY=0; velY=0; grounded=true; GFX.yaw.position.set(x,groundY+HEIGHT,z); GFX.yaw.rotation.y=faceY||0; GFX.pitch.rotation.x=0; }
   function heal(n){ S.player.health=Math.min(S.player.maxHealth, S.player.health+n); Events.emit('player:changed'); }
 
   // ---- simplified healing + buff consumables (added: feat/lns-throwables-healing)
@@ -127,7 +159,18 @@ export const Player = (function(){
     if(Input.isTouch){ f+=Input.touchMove.y; s+=Input.touchMove.x; }
     const mv=new T.Vector3().addScaledVector(fwdV,f).addScaledVector(rightV,s);
     const moving=mv.lengthSq()>0.0004; movingFlag=moving;
-    if(moving){ if(mv.lengthSq()>1) mv.normalize(); mv.multiplyScalar(speed*dt*(S.player.ads?0.55:1)); World.moveActor(GFX.yaw.position, mv, RADIUS); }
+    if(moving){ if(mv.lengthSq()>1) mv.normalize(); mv.multiplyScalar(speed*dt*(S.player.ads?0.55:1)); World.moveActor(GFX.yaw.position, mv, RADIUS, groundY); }
+    // FLOOR TRACKING: the standing floor under the player is the top of whatever
+    // collider they're over (0 = bare ground), so after a mantle you can WALK on a
+    // crate/ledge and step OFF its edge into a fall. A small step-up tolerance lets
+    // you walk up shallow lips without a full vault; a drop starts a fall.
+    const floor=World.groundTopAt?World.groundTopAt(GFX.yaw.position.x, GFX.yaw.position.z):0;
+    if(grounded){
+      if(floor<=groundY+0.001){ groundY=floor; }                 // walked onto lower/equal ground → follow it down
+      else if(floor-groundY<=0.35){ groundY=floor; }             // small lip → step up automatically
+      // else: a tall face ahead — handled by the vault probe / collision, not a step
+      if(floor<groundY-0.05){ grounded=false; }                  // stepped off an edge → fall
+    }
     // jump + gravity (vertical only; XZ collision is 2D). The jump key is context-
     // sensitive: pressed while moving INTO a surmountable obstacle it VAULTS/CLIMBS
     // instead of a plain hop. jumpLatch makes one press = one action.
@@ -142,9 +185,21 @@ export const Player = (function(){
       velY=JUMP; grounded=false; Audio.play('ui');                        // nothing to vault → hop
     }
     if(!jumpHeld) jumpLatch=false;
-    if(!grounded){ velY-=GRAV*dt; jumpY+=velY*dt; if(jumpY<=0){ jumpY=0; velY=0; grounded=true; } }
+    if(!grounded){
+      velY-=GRAV*dt; jumpY+=velY*dt;
+      // jumpY is the foot height ABOVE the floor we left (groundY). Land when the
+      // foot reaches the floor under the CURRENT XZ — which may be lower (you stepped
+      // off an edge / fell into a pit) or a mantled surface — then re-seat groundY to
+      // it. This lets you fall DOWN off a crate, not stop at its top height.
+      if(groundY+jumpY<=floor){ jumpY=0; velY=0; grounded=true; groundY=floor; groundCur=floor; }
+    }
     eyeCur += (eye-eyeCur)*Math.min(1,dt*12);
-    GFX.yaw.position.y = eyeCur + jumpY;
+    // visual floor SMOOTHING: groundY is the logical floor (snappy, for gravity/
+    // collision); groundCur eases toward it so an auto step-up onto a low lip reads
+    // as a smooth rise rather than a vertical pop. A fall (groundY drops while
+    // airborne) is driven by jumpY going negative, so groundCur just follows down.
+    groundCur += (groundY-groundCur)*Math.min(1,dt*14);
+    GFX.yaw.position.y = groundCur + eyeCur + jumpY;
     // footstep noise + faint sound (stealth: crouch near-silent, sprint loud)
     if(moving && grounded && S.mode===MODE.RAID){ stepT-=dt; if(stepT<=0){ stepT=crouch?0.55:sprint?0.28:0.42; Perception.footstep(GFX.yaw.position, sprint, crouch); if(!crouch) Audio.play('step'); } }
     // stamina (buff hook: Status.staminaMult boosts recovery, e.g. Focus Shot)
@@ -158,6 +213,6 @@ export const Player = (function(){
     if(vig>0){ vig-=dt; if(vig<=0) document.getElementById('vig').style.opacity='0'; }
     Events.emit('player:tick');
   }
-  function resetForRaid(){ S.player.health=S.player.maxHealth; S.player.stamina=S.player.maxStamina; Status.clearAll(); Input.crouch=false; vault=null; }
+  function resetForRaid(){ S.player.health=S.player.maxHealth; S.player.stamina=S.player.maxStamina; Status.clearAll(); Input.crouch=false; vault=null; groundY=0; groundCur=0; jumpY=0; velY=0; grounded=true; }
   return { spawn, heal, useMed, damage, update, resetForRaid, isMoving:()=>movingFlag, inVault, RADIUS, HEIGHT };
 })();

@@ -29,10 +29,65 @@ export const Loot = (function(){
     return newItem(tbl[0].id,1);
   }
   function clear(){ pickups=[]; corpses=[]; containers=[]; }
+  // ---- LOOSE-ITEM WORLD MODELS ---------------------------------------------
+  // A small per-TYPE shape so a dropped item is identifiable on the ground (a gun
+  // reads as a gun, ammo as a box, a med as a red cross, cash as a green stack, a
+  // grenade as a sphere). Falls back to the original glowing gem for anything else.
+  // Tinted by RARITY (the emissive halo) so rare drops still pop. Returned as a
+  // small Group centred at origin; spawnPickup positions/animates it as before.
+  function buildPickupModel(def){
+    const color=rarityColor(def.rarity);
+    const halo={emissive:color, emissiveIntensity:.35};
+    const M=(c,o={})=>new T.MeshStandardMaterial({color:c, roughness:o.rough??.6, metalness:o.metal??.2, emissive:o.emissive||0x000000, emissiveIntensity:o.ei??0});
+    const part=(g,geo,mat,x,y,z,rx,ry,rz)=>{ const m=new T.Mesh(geo,mat); m.position.set(x||0,y||0,z||0); if(rx)m.rotation.x=rx; if(ry)m.rotation.y=ry; if(rz)m.rotation.z=rz; g.add(m); return m; };
+    const g=new T.Group();
+    const t=def.type;
+    if(t==='weapon'){
+      // gun silhouette: a long receiver, a stubby barrel, an angled grip + a mag.
+      part(g,new T.BoxGeometry(0.62,0.12,0.12), M(0x3a3f45,{metal:.5,rough:.4, ...halo}), 0,0,0);   // receiver
+      part(g,new T.BoxGeometry(0.3,0.06,0.06),  M(0x2a2e33,{metal:.5,rough:.4}), 0.42,0.0,0);       // barrel
+      part(g,new T.BoxGeometry(0.1,0.22,0.1),   M(0x26282c,{metal:.3,rough:.5}),-0.14,-0.17,0, 0,0,0.25); // grip
+      part(g,new T.BoxGeometry(0.1,0.2,0.08),   M(0x202225,{metal:.3,rough:.5}), 0.02,-0.18,0);     // magazine
+    } else if(t==='ammo'){
+      // small ammo box with a banded lid (boxy, industrial).
+      part(g,new T.BoxGeometry(0.34,0.26,0.24), M(0x5a6a3a,{rough:.7, ...halo}), 0,0,0);
+      part(g,new T.BoxGeometry(0.36,0.06,0.26), M(0x44522e,{rough:.75}), 0,0.15,0);                 // lid band
+    } else if(t==='med'){
+      // white med pack with a RED CROSS — unmistakable.
+      part(g,new T.BoxGeometry(0.32,0.3,0.18), M(0xd7dadd,{rough:.55, ...halo}), 0,0,0);
+      const red=M(0xd23a3a,{emissive:0xd23a3a,ei:.3,rough:.5});
+      part(g,new T.BoxGeometry(0.18,0.06,0.04), red, 0,0,0.1);
+      part(g,new T.BoxGeometry(0.06,0.18,0.04), red, 0,0,0.1);
+    } else if(t==='throwable'){
+      // frag: a dark sphere with a top lever stub.
+      part(g,new T.SphereGeometry(0.2,12,10), M(0x44503a,{rough:.6, ...halo}), 0,0,0);
+      part(g,new T.BoxGeometry(0.06,0.14,0.06), M(0x9aa0a6,{metal:.6,rough:.4}), 0.06,0.18,0, 0,0,0.3);
+    } else if(t==='valuable'){
+      // cash stack / gold bar — flat slab, value-green or gold tint.
+      const gold = def.id==='val_gold';
+      part(g,new T.BoxGeometry(0.34,0.14,0.2), M(gold?0xd9b24a:0x4a9a5a,{metal:gold?.6:.1,rough:.5, ...halo}), 0,0,0);
+      if(!gold) for(let s=0;s<2;s++) part(g,new T.BoxGeometry(0.36,0.03,0.22), M(0x3a7a48,{rough:.6}), 0,-0.04+s*0.08,0); // banded notes
+    } else if(t==='material'){
+      // raw material chunk: a faceted nugget (keeps the gem feel but smaller/rougher).
+      part(g,new T.IcosahedronGeometry(0.22,0), M(0x8a8f96,{metal:.3,rough:.7, ...halo}), 0,0,0);
+    } else if(t==='attachment'){
+      // optic/attachment: a small ringed cylinder.
+      part(g,new T.CylinderGeometry(0.12,0.12,0.28,14), M(0x2c3034,{metal:.5,rough:.4, ...halo}), 0,0,0, Math.PI/2,0,0);
+      part(g,new T.TorusGeometry(0.13,0.03,8,16), M(0x4a5560,{metal:.4,rough:.4}), 0,0,0.14);
+    } else if(t==='armor'||t==='helmet'||t==='rig'||t==='backpack'||t==='case'){
+      // gear: a soft rounded slab (pack/vest) — distinct from the boxy ammo case.
+      part(g,new T.BoxGeometry(0.34,0.4,0.2), M(0x4a4f44,{rough:.8, ...halo}), 0,0,0);
+      part(g,new T.BoxGeometry(0.36,0.1,0.22), M(0x3a3f36,{rough:.85}), 0,0.12,0);                  // flap/strap band
+    } else {
+      // fallback: the original glowing gem.
+      part(g,new T.IcosahedronGeometry(.24,0), new T.MeshStandardMaterial({color, emissive:color, emissiveIntensity:.5}), 0,0,0);
+    }
+    return g;
+  }
   // loose world item -> requires the PICKUP hotkey to grab (registered as a World interactable)
   function spawnPickup(x,z,item){
-    const def=item.def; const color=rarityColor(def.rarity);
-    const mesh=new T.Mesh(new T.IcosahedronGeometry(.26,0), new T.MeshStandardMaterial({color, emissive:color, emissiveIntensity:.5}));
+    const def=item.def;
+    const mesh=buildPickupModel(def);
     mesh.position.set(x,.55,z); GFX.world.add(mesh);
     const pk={mesh,x,z,item,consumed:false};
     const inter={ pos:new T.Vector3(x,1,z), radius:2.0, key:'pickup', label:`take ${def.name}${item.qty>1?' ×'+item.qty:''}`, action:()=>grab(pk,inter) };
@@ -91,11 +146,73 @@ export const Loot = (function(){
     UI.toast(crate.rare?'Rare cache cracked':'Crate opened', crate.rare?'rare':'neu');
     if(crate.rare) Events.emit('obj:rare');
   }
+  // ---- 3D CONTAINER MODELS -------------------------------------------------
+  // Recognizable low-poly models so the player can read a container at a glance
+  // (a weapon crate looks military, a med crate carries a red cross, a locker is a
+  // tall cabinet with a door, a safe has a dial). Each returns a THREE.Group with
+  // an `.accent` sub-mesh = the part that glows until searched (so the existing
+  // "turn the highlight off on open" behaviour keeps working on the Group). Shared
+  // box geometry where it helps; a small fixed part count per model keeps it cheap.
+  const Cm = (color,opt={})=>new T.MeshStandardMaterial({color, roughness:opt.rough??.75, metalness:opt.metal??.2,
+              emissive:opt.emissive||0x000000, emissiveIntensity:opt.ei||0});
+  function panel(g,w,h,d,x,y,z,mat){ const m=new T.Mesh(new T.BoxGeometry(w,h,d),mat); m.position.set(x,y,z); m.castShadow=true; g.add(m); return m; }
+  function buildContainerModel(type,baseColor){
+    const g=new T.Group();
+    // a faint glow accent strip every model carries — set as g.accent so the search
+    // action can dim it. Default: a thin lid/face band lit in the container's color.
+    let accent;
+    if(type==='weapon'){
+      // AMMO / WEAPON CRATE: olive military box, lid seam, corner ribs, two latches.
+      const body=Cm(0x4a5a3a,{rough:.8,metal:.15});
+      panel(g,1.5,0.95,1.0, 0,0.475,0, body);                       // main body
+      panel(g,1.55,0.12,1.05, 0,0.95,0, Cm(0x3c4a30,{rough:.85})); // lid seam band
+      // corner ribs (steel edging)
+      for(const sx of [-1,1]) for(const sz of [-1,1])
+        panel(g,0.1,1.0,0.1, sx*0.72,0.5,sz*0.48, Cm(0x2a3322,{metal:.4,rough:.5}));
+      // latches (front face)
+      for(const sx of [-0.45,0.45]) panel(g,0.16,0.16,0.06, sx,0.55,0.52, Cm(0x8a8a78,{metal:.6,rough:.4}));
+      // a stencil band (faint emissive) so it reads as a marked crate = the accent
+      accent=panel(g,0.9,0.18,0.04, 0,0.55,0.52, Cm(baseColor,{emissive:baseColor,ei:.3,rough:.6}));
+    } else if(type==='med'){
+      // MED CRATE: pale grey case with a bright RED CROSS on the lid + front.
+      panel(g,1.2,0.9,1.0, 0,0.45,0, Cm(0xcdd2d6,{rough:.6}));      // white-ish body
+      panel(g,1.24,0.1,1.04, 0,0.9,0, Cm(0xb6bbc0,{rough:.65}));    // lid seam
+      // red cross (two crossed bars) on the front face — unmistakable medical mark
+      const red=Cm(0xd23a3a,{emissive:0xd23a3a,ei:.25,rough:.5});
+      panel(g,0.5,0.16,0.05, 0,0.5,0.52, red);                      // horizontal bar
+      accent=panel(g,0.16,0.5,0.05, 0,0.5,0.52, red);               // vertical bar (accent)
+      // a small cross on the lid too
+      panel(g,0.34,0.1,0.05, 0,0.91,0.0, red);
+      panel(g,0.1,0.34,0.05, 0,0.91,0.0, red);
+    } else if(type==='safe'){
+      // SAFE: heavy dark steel cube, recessed door, round DIAL + handle bar.
+      panel(g,1.1,1.1,1.0, 0,0.55,0, Cm(0x33373d,{metal:.5,rough:.35})); // body
+      panel(g,0.85,0.85,0.06, 0,0.55,0.5, Cm(0x282c31,{metal:.55,rough:.3})); // recessed door
+      // round dial (short cylinder) — the safe tell
+      const dial=new T.Mesh(new T.CylinderGeometry(0.16,0.16,0.1,16), Cm(0x9aa0a6,{metal:.7,rough:.3}));
+      dial.rotation.x=Math.PI/2; dial.position.set(-0.18,0.55,0.55); dial.castShadow=true; g.add(dial);
+      panel(g,0.3,0.08,0.08, 0.22,0.55,0.55, Cm(0x9aa0a6,{metal:.7,rough:.3})); // handle bar
+      accent=panel(g,0.85,0.06,0.04, 0,0.92,0.5, Cm(baseColor,{emissive:baseColor,ei:.3,rough:.5})); // top status strip
+    } else {
+      // LOCKER: tall thin cabinet, single door line, handle, top vent slits.
+      panel(g,0.9,1.7,0.6, 0,0.85,0, Cm(0x55503f,{rough:.7,metal:.2}));    // cabinet body (taller than wide)
+      panel(g,0.06,1.55,0.62, 0.0,0.85,0.0, Cm(0x3e3a2d,{rough:.75}));     // central door seam
+      panel(g,0.1,0.3,0.08, 0.28,0.85,0.31, Cm(0x9aa0a6,{metal:.6,rough:.4})); // handle
+      // vent slits near the top (three thin bars)
+      for(let v=0;v<3;v++) panel(g,0.5,0.04,0.04, 0,1.45-v*0.12,0.31, Cm(0x3a3729,{rough:.8}));
+      accent=panel(g,0.6,0.1,0.04, 0,0.3,0.31, Cm(baseColor,{emissive:baseColor,ei:.3,rough:.6})); // base status strip
+    }
+    g.accent=accent;
+    return g;
+  }
+
   // searchable container: timed search, then opens the dual-panel loot UI; persists items
   function makeContainer(x,z,type){
     const def=DATA.containers[type];
-    const m=new T.Mesh(new T.BoxGeometry(1.3,1.2,0.95), new T.MeshStandardMaterial({color:def.color, emissive:def.color, emissiveIntensity:.14, roughness:.7, metalness:.3}));
-    m.position.set(x,.6,z); m.castShadow=true; GFX.world.add(m);
+    // recognizable 3D model (was a plain colored box). No collider is added here —
+    // identical to before: a container is a visual + an interactable, not a wall.
+    const m=buildContainerModel(type, def.color);
+    m.position.set(x,0,z); GFX.world.add(m);
     const g=new Inventory.Grid(def.grid[0],def.grid[1]);
     const n=2+Math.floor(Math.random()*3);
     for(let i=0;i<n;i++) g.add(roll(def.table));
@@ -106,7 +223,7 @@ export const Loot = (function(){
     const inter={ pos:cont.pos, radius:2.4, key:'interact', label:'search '+def.name.toLowerCase(),
       // Open the crate IMMEDIATELY (no upfront wait) and let the loot UI reveal each
       // item one-by-one with its own progress bar — show-the-crate-then-fill feel.
-      action:()=>{ Audio.play('ui'); cont.searched=true; m.material.emissiveIntensity=0; inter.label='loot '+def.name.toLowerCase();
+      action:()=>{ Audio.play('ui'); cont.searched=true; if(m.accent) m.accent.material.emissiveIntensity=0; inter.label='loot '+def.name.toLowerCase();
         if(S.mode===MODE.RAID) UI.openLoot(cont); } };
     World.addInteract(inter);
   }
