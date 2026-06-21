@@ -1,0 +1,36 @@
+name: geo-validate
+# Numerical geometry gate for the building generator. Runs scripts/geo-validate.mjs
+# (no browser needed — it reconstructs every wall/roof/floor/door/stair as a
+# world-space AABB via the shared js/buildgeo.js math and asserts the structural
+# contracts: roofs cover + peak at a shared ridge ON the wall-tops, exterior walls
+# never pass through another building, walls grounded/continuous, doors+stairs OK).
+# Also syntax-checks the JS modules so a parse error can't merge green.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'js/**'
+      - 'scripts/geo-validate.mjs'
+      - '.github/workflows/geo-validate.yml'
+  pull_request:
+    paths:
+      - 'js/**'
+      - 'scripts/geo-validate.mjs'
+      - '.github/workflows/geo-validate.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Syntax-check JS modules
+        run: |
+          for f in js/*.js scripts/*.mjs; do node --check "$f"; done
+      - name: Validate building geometry
+        run: node scripts/geo-validate.mjs
