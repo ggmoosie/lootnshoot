@@ -1191,12 +1191,14 @@ export const UI = (function(){
 
   // ---------- REPORT (bug / feature) ----------
   // Mirrors the report widget shipped in Riftspawn/TableForge: a Bug/Feature
-  // toggle, a persisted "your name" field, and a message box. Submit POSTs to the
-  // Jarvis brain's /report endpoint with triage context (url, version, and the
-  // last ~5 console errors captured by the ring buffer installed in index.html).
+  // toggle, a "your name" field, and a message box. Submit writes a DIRECT
+  // Firestore doc at reports/{id} (via the same compat SDK Save/Account use) so
+  // reports flow straight to Jarvis Local — NO Cloudflare worker on the write
+  // path. Triage context (url, version, last ~5 console errors from the ring
+  // buffer in index.html) rides along. The Firestore rule rejects writes whose
+  // playerUid != the authed uid, so sending a report REQUIRES being signed in.
   // Built from state into #reportCard so it composes with the overlay manager and
   // reuses the game's HUD styling — no new palette, no new dependencies.
-  const REPORT_URL='https://jarvis-brain.vgermade721.workers.dev/report';
   const REPORT_NAME_KEY='lootnshoot_report_name';
   let rpType='bug', rpSending=false;
   function openReport(){ rpType='bug'; rpSending=false; openOverlay('ovReport'); renderReport(); setTimeout(()=>{ try{ const n=$('rpName'); (n&&n.value?$('rpText'):n).focus(); }catch(_){} },30); }
@@ -1245,33 +1247,39 @@ export const UI = (function(){
   function reportMsg(text,color){ const m=$('rpMsg'); if(m){ m.textContent=text||''; m.style.color=color||'var(--dim)'; } }
   async function submitReport(){
     if(rpSending) return;                         // debounce double-submits
-    // Signed in → attribute the report to the account (username + playerUid, which
-    // the backend supports). Signed out / offline → the manual name field, persisted
-    // as before. The username takes precedence so the field can't drift out of sync.
+    // The report is written DIRECTLY to Firestore reports/{id}, attributed to the
+    // signed-in account (username + playerUid). The Firestore rule requires
+    // playerUid == the authed uid, so a report can only be sent while signed in.
     const acct=Account.current();
-    const name=acct ? acct.username : ($('rpName').value||'').trim();
+    const db=Account.db();
     const message=($('rpText').value||'').trim();
     if(!message){ reportMsg('Tell us a little about it first.','var(--amber)'); $('rpText').focus(); return; }
-    if(!acct){ try{ if(name) localStorage.setItem(REPORT_NAME_KEY,name); }catch(_){} } // only persist the manual name
+    if(!acct || !db){ reportMsg('Please sign in to send a report','var(--amber)'); return; } // require login; keep modal open
     rpSending=true; const sub=$('rpSubmit'); if(sub){ sub.classList.add('disabled'); sub.innerHTML='<span class="k">…</span> Sending'; } reportMsg('');
-    const payload={
+    const now=new Date().toISOString();
+    const id='rpt_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+    const report={
+      id,
       project:'lootnshoot',
       type:rpType,
-      player:name||'anonymous',
       message,
+      player:acct.username,
+      playerUid:acct.uid,
       context:{
         url:location.href,
         version:GAME_VERSION,
-        // last ~5 captured console errors, newline-joined (stored server-side as a string)
+        // last ~5 captured console errors, newline-joined (stored as a string)
         console:(typeof window!=='undefined'&&Array.isArray(window.__LNS_ERRLOG)?window.__LNS_ERRLOG.slice(-5).join('\n'):'')
-      }
+      },
+      status:'submitted',
+      createdAt:now,
+      updatedAt:now,
+      triage:null,
+      questions:[],
+      clarifications:[]
     };
-    // account-linked attribution when signed in (backend supports playerUid)
-    if(acct) payload.playerUid=acct.uid;
     try{
-      const res=await fetch(REPORT_URL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-      if(!res.ok) throw new Error('HTTP '+res.status);
-      try{ await res.json(); }catch(_){}          // response is {id,status}; not needed
+      await db.collection('reports').doc(id).set(report);
       reportMsg('✓ Submitted — thanks!','var(--go)');
       if(sub) sub.innerHTML='<span class="k">✓</span> Sent';
       setTimeout(()=>{ if($('ovReport').classList.contains('show')) closeMenus(); },1100);
